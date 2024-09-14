@@ -15,7 +15,7 @@ int main(int argc, char *argv[])
 	)
 	{
 		INFO("Building `build` project.");
-		CMD("cc", "example/hello_world.c", "-Iexample/", CFLAGS, "-o", "out");
+		CMD("gcc", "example/hello_world.c", "-Iexample/", CFLAGS, "-o", "out");
 	}
 	else
 	{
