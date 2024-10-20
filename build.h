@@ -158,6 +158,20 @@ void cmd_execute(char *, ...);
 */
 bool strlistcmp(const char *, const char **, size_t);
 
+/*
+ * run_command(const char *)
+ * unlike CMD or system, it will return the output.
+ * It is usefull to get somewhat close to `shell` experience.
+*/
+char* run_command(const char *);
+
+/*
+ * get_list_from_string(const char *, unsigned char, size_t *)
+ * convert string to a list,
+ * its !join (get it?) i know lame joke.
+*/
+char **get_list_from_string(const char *, unsigned char, size_t *);
+
 /********************************************
  * 						   DEFINITION	
 ********************************************/
@@ -421,6 +435,73 @@ void cmd_execute(char *first, ...)
 	}
 
 	free(b);
+}
+
+char* run_command(const char* command)
+{
+	char* result = NULL;
+	size_t size = 0;
+	FILE* fp = popen(command, "r");
+	if (fp == NULL)
+	{
+		perror("popen failed");
+		return NULL;
+	}
+
+	// Read the output a line at a time
+	char buffer[128];
+	while (fgets(buffer, sizeof(buffer), fp) != NULL)
+	{
+		size_t len = strlen(buffer);
+		char* new_result = realloc(result, size + len + 1);
+		if (new_result == NULL)
+		{
+			perror("realloc failed");
+			free(result);
+			pclose(fp);
+			return NULL;
+		}
+		result = new_result;
+		memcpy(result + size, buffer, len);
+		size += len;
+		result[size] = '\0';
+	}
+
+	pclose(fp);
+	return result;
+}
+
+char **get_list_from_string(const char *string, unsigned char seperator, size_t *n)
+{
+	size_t len = 0;
+
+	for (size_t i = 0; i < strlen(string); ++i)
+		if (string[i] == seperator) len++;
+
+	*n = len;
+	char **buffer = (char**)malloc(len * sizeof(char**));
+
+	size_t p1 = 0;
+	size_t p2 = 0;
+	size_t b_idx = 0;
+
+	for (; p2 < strlen(string); ++p2)
+	{
+		if (string[p2] == seperator)
+		{
+			char *sub_str = substr(string, p1, p2);
+			size_t sub_str_len = strlen(sub_str);
+
+			buffer[b_idx] = (char*)malloc(sub_str_len * sizeof(char));
+			strcpy(buffer[b_idx], sub_str);
+
+			free(sub_str);
+			p1 = p2 + 1;
+			b_idx++;
+		}
+	}
+
+	return buffer;
 }
 
 void build_itself() __attribute__((constructor));

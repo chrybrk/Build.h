@@ -2,25 +2,12 @@
 
 #include "build.h"
 
-#define CFLAGS "-Wall", "-O3"
+#define CC "gcc"
+#define CFALGS "-O2", "-g0", "-static"
 
-int main(int argc, char *argv[])
+int main(int argc, char **argv)
 {
-	if (
-			needs_recompilation(
-				"out", 
-				(const char*[]){ "example/hello_world.c", "example/hello_world.h" }, 
-				2
-			)
-	)
-	{
-		INFO("Building `build` project.");
-		CMD("gcc", "example/hello_world.c", "-Iexample/", CFLAGS, "-o", "out");
-	}
-	else
-	{
-		INFO("Example is up-to-dated.");
-	}
+	CMD(CC, CFALGS, "-Iexample/", "example/hello_world.c", "-o", "out");
 
 	return 0;
 }
