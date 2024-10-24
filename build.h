@@ -83,6 +83,15 @@ typedef enum {
 	RESET
 } TERM_KIND;
 
+struct download_info
+{
+	const char *url;
+	const char *out_dir;
+	const char *filename;
+	bool extract;
+	const char *extract_in_dir;
+	const char *tar_command;
+};
 
 /********************************************
  * 						MACRO FUNCTIONS	
@@ -154,6 +163,21 @@ char *substr(const char *string, size_t n1, size_t n2);
 char **get_list_of_files(const char *path, int *count);
 
 /*
+ * Function: get_list_of_files_ext(const char *path, const char *ends_with, int *count)
+ * -----------------------
+ *  Find all the files in the given path.
+ *
+ * path: Path (const char *)
+ * ends_with: Extention (const char *)
+ * count: Sets count to be the length of the buffer (int *)
+ *
+ * returns: String buffer (char **) 
+ *
+ * Note: String is allocated in heap, so it must be freed.
+ */
+char **get_list_of_files_ext(const char *path, const char *ends_with, int *count);
+
+/*
  * Function: get_last_modification_time(const char *filename)
  * -----------------------
  *  Returns the last modified time of the given file.
@@ -192,6 +216,21 @@ bool needs_recompilation(const char *binary, const char *sources[], size_t num_s
  * Note: String is allocated in the heap, so it must be freed.
  */
 char *join(unsigned char sep, const char **buffer, size_t n);
+
+/*
+ * Function: join_cstr(const char *sep, const char **buffer, size_t n)
+ * -----------------------
+ *  Join the list of string into one string and separate them by a seperator.
+ *
+ * binary: Separator (const char *)
+ * buffer: List of string (const char **)
+ * n: Length of the list (size_t) 
+ *
+ * returns: Returns new string separated by seperator (char *) 
+ *
+ * Note: String is allocated in the heap, so it must be freed.
+ */
+char *join_cstr(const char *sep, const char **buffer, size_t n);
 
 /*
  * Function: separate(unsigned char sep, const char *string, size_t *n)
@@ -259,6 +298,18 @@ bool strlistcmp(const char *s1, const char **s2, size_t n);
 bool is_directory_exists(const char *path);
 
 /*
+ * Function: is_file_exists(const char *path)
+ * -----------------------
+ *  Checks if path is a file or not.
+ *
+ * path: Path of the file (const char *)
+ *
+ * returns: True if it founds the path to be file; else false. 
+ *
+ */
+bool is_file_exists(const char *path);
+
+/*
  * Function: create_directories(const char *s)
  * -----------------------
  *  Converts `s` to list of string,
@@ -269,6 +320,42 @@ bool is_directory_exists(const char *path);
  *
  */
 void create_directories(const char *s);
+
+/*
+ * Function: create_directories_from_path(const char *path)
+ * -----------------------
+ *  Create directory from sub-path, if they do not exist already.
+ *
+ * path: Path `xyz/path/some/dir`, it will check if any of the sub-directory. (const char *)
+ *
+ */
+void create_directories_from_path(const char *path);
+
+/*
+ * Function: download(size_t n, struct download_info d_info[n])
+ * -----------------------
+ *  Downloads using `curl` and extract (if needed) using tar.
+ *
+ * n: Size of download infos. (size_t)
+ * d_info: List of items (struct download_info)
+ * 
+*/
+void download(size_t n, struct download_info d_info[n]);
+
+/*
+ * Function: library_static(char *cmds, char **source_files, int n, const char *out_dir, const char *libname)
+ * -----------------------
+ *  Create a static library.
+ *
+ * cmds: Command that will be added to execution, and they are the initial commands. (char *)
+ * source_files: List of files. (const char **)
+ * n: Length of files. (int)
+ * out_dir: Output directory path. (const char *)
+ * libname: Output library name. (const char *)
+ *
+ * 
+*/
+void library_static(char *cmds, char **source_files, int n, const char *out_dir, const char *libname);
 
 /********************************************
  * 						   DEFINITION	
@@ -291,7 +378,7 @@ const char *get_term_color(TERM_KIND kind, TERM_COLOR color)
 char *writef_function(char *s, ...)
 {
 	// allocate small size buffer
-	size_t buffer_size = 64; // 64 bytes
+	size_t buffer_size = 64; // bytes
 	char *buffer = (char*)malloc(buffer_size);
 
 	if (buffer == NULL)
@@ -356,7 +443,7 @@ char *substr(const char *string, size_t n1, size_t n2)
 		return NULL;
 	}
 
-	char *result = (char*)malloc((n2 - n1) * sizeof(char));
+	char *result = (char*)malloc((n2 - n1 + 1) * sizeof(char));
 	if (result == NULL)
 	{
 		WARN("substr: Failed to allocate buffer.");
@@ -402,6 +489,38 @@ char **get_list_of_files(const char *path, int *count)
 	}
 
 	*count = internalCounter;
+	return buffer;
+}
+
+char **get_list_of_files_ext(const char *path, const char *ends_with, int *count)
+{
+	char **file_list = get_list_of_files(path, count);
+
+	size_t n = 0;
+	for (int i = 0; i < *count; ++i)
+	{
+		size_t fl_len = strlen(file_list[i]);
+		size_t ew_len = strlen(ends_with);
+
+		if (!strcmp(ends_with, substr(file_list[i], fl_len - ew_len, fl_len)))
+			n++;
+	}
+
+	char **buffer = malloc(sizeof(char**) * n); n = 0;
+	for (int i = 0; i < *count; ++i)
+	{
+		size_t fl_len = strlen(file_list[i]);
+		size_t ew_len = strlen(ends_with);
+
+		if (!strcmp(ends_with, substr(file_list[i], fl_len - ew_len, fl_len)))
+		{
+			buffer[n] = malloc(sizeof(char) * fl_len);
+			buffer[n++] = file_list[i];
+		}
+	}
+
+	*count = n;
+
 	return buffer;
 }
 
@@ -463,6 +582,55 @@ char *join(unsigned char sep, const char **buffer, size_t n)
 	for (size_t i = 0; i < n; ++i)
 	{
 		const char *string = writef("%s%c", buffer[i], sep);
+		size_t len = strlen(string) + 1;
+		
+		if ((ptr_in_pool + len) >= current_pool_size)
+		{
+			current_pool_size += POOL_SIZE;
+			pool = (char*)realloc(pool, current_pool_size);
+		}
+
+		ptr_in_pool += len;
+		pool = strcat(pool, string);
+		pool[ptr_in_pool + 1] = '\0';
+	}
+
+	// create a final buffer to be returned.
+	char *bf = (char*)malloc(ptr_in_pool + 1);
+	bf = strncpy(bf, pool, ptr_in_pool);
+	bf[ptr_in_pool] = '\0'; // don't forget to add null ptr, it is pain in the ass.
+	
+	// we don't need pool because we have already created smaller pool of content size.
+	free(pool);
+
+	return bf;
+}
+
+char *join_cstr(const char *sep, const char **buffer, size_t n)
+{
+	/* *** BUFFER ALLOCATOR *** */
+
+	/*
+		* How this is going to work?
+		* Well, we define a *pool, and fill it up.
+		* If pools fills up, we re-alloc it with the same size.
+	*/
+
+	// set the max size for pool
+	const size_t POOL_SIZE = 64 * 1024;
+
+	char *pool = (char*)malloc(POOL_SIZE); // 65536 bytes
+	if (pool == NULL) printf("Failed to create pool for joining text.\n");
+
+	// set pool to NULL
+	pool = (char*)memset(pool, 0, POOL_SIZE);
+
+	size_t current_pool_size = POOL_SIZE;
+	size_t ptr_in_pool = 0; // it will keep track where we are in the pool.	
+
+	for (size_t i = 0; i < n; ++i)
+	{
+		const char *string = writef("%s%s", buffer[i], sep);
 		size_t len = strlen(string);
 		
 		if ((ptr_in_pool + len) >= current_pool_size)
@@ -494,6 +662,8 @@ char **separate(unsigned char sep, const char *string, size_t *n)
 	for (size_t i = 0; i < strlen(string); ++i)
 		if (string[i] == sep) len++;
 
+	len++;
+
 	*n = len;
 	char **buffer = (char**)malloc(len * sizeof(char**));
 
@@ -506,7 +676,7 @@ char **separate(unsigned char sep, const char *string, size_t *n)
 		if (string[p2] == sep)
 		{
 			char *sub_str = substr(string, p1, p2);
-			size_t sub_str_len = strlen(sub_str);
+			size_t sub_str_len = strlen(sub_str) + 1;
 
 			buffer[b_idx] = (char*)malloc(sub_str_len * sizeof(char));
 			strcpy(buffer[b_idx], sub_str);
@@ -516,6 +686,14 @@ char **separate(unsigned char sep, const char *string, size_t *n)
 			b_idx++;
 		}
 	}
+
+	char *sub_str = substr(string, p1, strlen(string));
+	size_t sub_str_len = strlen(sub_str) + 1;
+
+	buffer[b_idx] = (char*)malloc(sub_str_len * sizeof(char));
+	strcpy(buffer[b_idx], sub_str);
+
+	free(sub_str);
 
 	return buffer;
 }
@@ -616,27 +794,113 @@ bool is_directory_exists(const char *path)
 	return !atoi(t);
 }
 
+bool is_file_exists(const char *path)
+{
+	char *t = run_command(writef("test -f %s && echo 0 || echo 1", path));
+	return !atoi(t);
+}
+
 void create_directories(const char *s)
 {
 	size_t n;
 	char **bf = separate(' ', s, &n);
 
-	size_t len = 0;
 	for (size_t i = 0; i < n; ++i)
 	{
-		len += strlen(bf[i]) + 1; // later this will be used for seprating last element.
 		if (!is_directory_exists(bf[i]))
 			CMD("mkdir", bf[i]);
 	}
-
-	// get last element from the string
-	// because the string ends and it might not have whitespace
-	// so it would not separate from the string.
-	char *last_element = substr(s, len, strlen(s));
-
-	if (!is_directory_exists(last_element))
-		CMD("mkdir", last_element);
 }
+
+void create_directories_from_path(const char *path)
+{
+	size_t n;
+	char **d = separate('/', path, &n);
+
+	size_t p2 = 0;
+	for (size_t i = 0; i < n; ++i)
+	{
+		char *d_name = d[i];
+		p2 += strlen(d_name) + 1;
+
+		char *ss = substr(path, 0, p2);
+
+		if (!is_directory_exists(ss))
+			CMD("mkdir", ss);
+
+		free(ss);
+	}
+
+	free(d);
+}
+
+void download(size_t n, struct download_info d_info[n])
+{
+	for (size_t i = 0; i < n; ++i)
+	{
+		struct download_info df = d_info[i];
+
+		create_directories_from_path(df.out_dir);
+
+		const char *path = writef("%s%s", df.out_dir, df.filename);
+		if (!is_file_exists(path))
+			CMD("curl", "-L", "-o", path, df.url);
+
+		if (df.extract && !is_directory_exists(df.extract_in_dir))
+		{
+			create_directories_from_path(df.extract_in_dir);
+			CMD((char*)df.tar_command, (char*)path, "-C", df.extract_in_dir, "-v");
+		}
+	}
+}
+
+void library_static(char *cmds, char **files, int n, const char *out_dir, const char *libname)
+{
+	bool lib_needs_to_compile = false;
+
+	for (int i = 0; i < n; ++i)
+	{
+		size_t path_len;
+		char **paths = separate('/', writef("%s%s", out_dir, files[i]), &path_len);
+
+		size_t len = strlen(files[i]);
+		char *path = substr(files[i], 0, len - strlen(paths[path_len - 1]));
+
+		create_directories_from_path(writef("%s%s", out_dir, path));
+
+		if (needs_recompilation(writef("%s%s.o", out_dir, files[i]), (const char *[]){ files[i] }, 1))
+		{
+			CMD(cmds, "-c", files[i], "-o", writef("%s%s.o", out_dir, files[i]));
+			lib_needs_to_compile = true;
+		}
+
+		free(path);
+		free(paths);
+	}
+	
+	if (lib_needs_to_compile)
+	{
+		char **buffer = malloc(sizeof(char) * n);
+		for (int i = 0; i < n; ++i)
+		{
+			char *s = writef("%s%s.o", out_dir, files[i]);
+			size_t len = strlen(s) + 1;
+
+			buffer[i] = malloc(sizeof(char) * len);
+			strncpy(buffer[i], s, len);
+
+			free(s);
+		}
+
+		char *f = join(' ', (const char **)buffer, n);
+		CMD("ar", "rcs", writef("%s%s", out_dir, libname), f);
+
+		free(buffer);
+		free(f);
+	}
+}
+
+
 
 /*
  * build_itself()
