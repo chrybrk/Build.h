@@ -61,6 +61,8 @@
 	#define CMD_DEBUG_OUTPUT true
 #endif // CMD_DEBUG_OUTPUT
 
+#define DEFER(func) __attribute__((cleanup(func)))
+
 typedef enum {
 	BLACK 	= 0,
 	RED 		= 1,
@@ -877,17 +879,17 @@ void library_static(char *cmds, char **files, int n, const char *out_dir, const 
 		free(path);
 		free(paths);
 	}
-	
+
 	if (lib_needs_to_compile)
 	{
-		char **buffer = malloc(sizeof(char) * n);
+		char **buffer = malloc(sizeof(char*) * n);
 		for (int i = 0; i < n; ++i)
 		{
 			char *s = writef("%s%s.o", out_dir, files[i]);
 			size_t len = strlen(s) + 1;
 
 			buffer[i] = malloc(sizeof(char) * len);
-			strncpy(buffer[i], s, len);
+			strcpy(buffer[i], s);
 
 			free(s);
 		}
