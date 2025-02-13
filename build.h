@@ -1,31 +1,60 @@
-#ifdef IMPLEMENT_BUILD_C
+/**********************************************************************************************
+* build.h (1.0.0) - A simple yet powerful build system written in C.
+*
+* FEATURES:
+* 	- No external dependencies.
+* 	- Automatic memory management using arena allocator.
+* 	- Automatic updates binary of build system: once compiled upon running it will check for any updates in the build-system.
+* 	- Arena allocator and Dynamic array.
+* 	- String function: join, seperate, sub-string.
+* 	- Get list of files, Create directories, check if files has been modified.
+* 	- Execute commands with strings, fromated strings.
+*
+* NOTES:
+*
+* 	#define IMPLEMENT_BUILD_H
+* 	#include "build.h"
+* 	
+*		const char *build_source;
+*		const char *build_bin;
+*
+*		These two must be set in the source file.
+*
+*		void build_start(int argc, char **argv)
+*		{
+*		}
+*
+*		This is the function that will start executing.
+*
+* MIT License
+*
+* Copyright (c) 2024 Chry003
+*
+* Permission is hereby granted, free of charge, to any person obtaining a copy
+* of this software and associated documentation files (the "Software"), to deal
+* in the Software without restriction, including without limitation the rights
+* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+* copies of the Software, and to permit persons to whom the Software is
+* furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in all
+* copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+* SOFTWARE.
+**********************************************************************************************/
 
-/*
-	MIT License
-
-	Copyright (c) 2024 Chry003
-
-	Permission is hereby granted, free of charge, to any person obtaining a copy
-	of this software and associated documentation files (the "Software"), to deal
-	in the Software without restriction, including without limitation the rights
-	to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-	copies of the Software, and to permit persons to whom the Software is
-	furnished to do so, subject to the following conditions:
-
-	The above copyright notice and this permission notice shall be included in all
-	copies or substantial portions of the Software.
-
-	THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-	IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-	FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-	AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-	LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-	OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-	SOFTWARE.
-*/
+#define IMPLEMENT_BUILD_H
+#ifdef IMPLEMENT_BUILD_H
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 #include <dirent.h>
 #include <stdarg.h>
@@ -35,33 +64,18 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <sys/wait.h>
 
-#if __WIN32__
-	#include <errno.h>
-#endif
+// called at the end of scope
+#define defer(func) __attribute__((cleanup(func)))
 
-#if __unix__
-	#include <sys/wait.h>
-#endif
+// string formating
+#define formate_string(...) ({ __formate_string_function__(__VA_ARGS__, NULL); })
 
-// If user has not define file for auto compilation
-#ifndef BUILD_SOURCE_FILE
-	#define BUILD_SOURCE_FILE "build.c"
-#endif // BUILD_SOURCE_FILE
-
-#ifndef BUILD_OUTPUT_FILE
-	#if __WIN32__
-		#define BUILD_OUTPUT_FILE "build.exe" // windows
-	#else
-		#define BUILD_OUTPUT_FILE "build"			// linux
-	#endif
-#endif // BUILD_OUTPUT_FILE
-
-#ifndef CMD_DEBUG_OUTPUT
-	#define CMD_DEBUG_OUTPUT true
-#endif // CMD_DEBUG_OUTPUT
-
-#define DEFER(func) __attribute__((cleanup(func)))
+// log-system
+#define INFO(...) printf("%s[BUILD :: INFO]:%s %s\n", get_term_color(TEXT, GREEN), get_term_color(RESET, 0), formate_string(__VA_ARGS__))
+#define WARN(...) printf("%s[BUILD :: WARN]:%s %s\n", get_term_color(TEXT, YELLOW), get_term_color(RESET, 0), formate_string(__VA_ARGS__))
+#define ERROR(...) printf("%s[BUILD :: ERROR]:%s %s\n", get_term_color(TEXT, RED), get_term_color(RESET, 0), formate_string(__VA_ARGS__)), exit_build_system(1);
 
 typedef enum {
 	BLACK 	= 0,
@@ -85,314 +99,245 @@ typedef enum {
 	RESET
 } TERM_KIND;
 
-struct download_info
+// arena allocator
+typedef struct ARENA_STRUCT
 {
-	const char *url;
-	const char *out_dir;
-	const char *filename;
-	bool extract;
-	const char *extract_in_dir;
-	const char *tar_command;
-};
+	size_t buffer_size;		// size of buffer
+	void *buffer;					// buffer
+	size_t ptr;						// current pointer in buffer
+} arena_T;
 
-/********************************************
- * 						MACRO FUNCTIONS	
-********************************************/
-#define CMD(...) cmd_execute(__VA_ARGS__, NULL)
-#define writef(...) ({  writef_function(__VA_ARGS__, NULL); })
-#define INFO(...) printf("%s[INFO]:%s %s\n", get_term_color(TEXT, GREEN), get_term_color(RESET, 0), writef(__VA_ARGS__))
-#define WARN(...) printf("%s[WARN]:%s %s\n", get_term_color(TEXT, YELLOW), get_term_color(RESET, 0), writef(__VA_ARGS__))
-#define ERROR(...) printf("%s[ERROR]:%s %s\n", get_term_color(TEXT, RED), get_term_color(RESET, 0), writef(__VA_ARGS__)), exit(1);
-
-/********************************************
- * 							DECLARATION
-********************************************/
+// array
+typedef struct ARRAY_STRUCT
+{
+	void **buffer;				// buffer to store elements
+	size_t index;					// index (pointer) where we need to store (actual length of array)
+	size_t len;						// length of the buffer (not true length)
+	size_t item_size;			// size of the item that needs to be put
+} array_T;
 
 /*
- * Function: get_term_color(TERM_KIND kind, TERM_COLOR color)
- * -----------------------
- *  Generates a string for printing colored text.
+ * This hash library is inspired (copied) from this reference.
+ * https://benhoyt.com/writings/hash-table-in-c/
  *
- * kind: Color affecting what part of text. (TERM_KIND)
- * color: Color of the text (TERM_COLOR)
+ * Legal Notice:
+ * You may use however you want to, including the right godfather.
  *
- * returns: Generated color format (const char *) 
- */
+ * It also uses `djb2` hashing function. 
+ * reference: http://www.cse.yorku.ca/~oz/hash.html
+*/
+
+/*
+ * hash struct consist of capacity, length and buffer.
+ * it is a pretty simple and straight forward hash library.
+*/
+#define MAX_HASH_TABLE_CAPACITY 1024
+
+typedef struct {
+	const char *key;
+	void *value;
+} hash_entry;
+
+typedef struct HASH_STRUCT {
+	hash_entry *buffer;
+	ssize_t capacity;
+	ssize_t length;
+	char **keys;
+} hash_T;
+
+/*
+ * Hashing function
+ * 
+ * It is a djb2 hashing function.
+ * reference: http://www.cse.yorku.ca/~oz/hash.html
+ *
+ * Legal Notice:
+ * I am not the godfather of this hashing function but if it works on your project, use it.
+*/
+unsigned long long
+hash_function(const char *string)
+{
+	// magic number is supposed to be `33`.
+	unsigned long hash = 5381;
+	int c;
+
+	while ((c = *string++) != 0)
+			hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+
+	return hash;
+}
+
+/*
+ * init hash table with default capacity,
+ * it still needs improvement for allocating more than default capacity.
+ *
+ * TODO: More capacity.
+*/
+hash_T *init_hash();
+
+/*
+ * it will free the buffer first and then free the hash itself.
+ * It may need to free all the keys, as in `benhoyt` implementation.
+ *
+ * But, for my use case i think it is fine to leave it as it is.
+*/
+void hash_free(hash_T *hash);
+
+/*
+ * It will return list of keys,
+ * that are present int the hashmap.
+*/
+const char **hash_bucket(hash_T *hash);
+
+/*
+ * It will set the value if it founds the key in entry,
+ * else it will create new entry.
+*/
+void hash_set(hash_T *hash, const char *key, void *value);
+
+/*
+ * it will loop through from hash_index till capacity.
+ * if it found non-null value, it will return.
+ * else null will be returned
+*/
+void* hash_get(hash_T *hash, const char *key);
+
+/**********************************************************************************************
+*																   Things that needs to be global
+**********************************************************************************************/
+
+// function that needs to implemented by the source
+extern void build_start(int argc, char **argv);
+
+// build files
+extern const char *build_source;
+extern const char *build_bin;
+
+// warn for non-freed arrays 
+static int array_allocated_counter = 0;
+
+// color for logging
 const char *get_term_color(TERM_KIND kind, TERM_COLOR color);
 
-/*
- * Function: writef_function(char *s, ...)
- * -----------------------
- *  It works like `printf` but it returns formated string.
- *
- * s: Formated string (char *)
- * ...: Arguments (auto)
- *
- * returns: Formated string (char *) 
- *
- * Note: String is allocated in heap, so it must be freed.
- */
-char *writef_function(char *s, ...);
+// macro-related function for formating string
+char *__formate_string_function__(char *s, ...);
 
-/*
- * Function: substr(const char *string, size_t n1, size_t n2)
- * -----------------------
- *  It will create a sub-string from given string,
- *  in the range of n1 to n2.
- *
- * string: Initial string (const char *)
- * n1: Starting index in the string (size_t)
- * n2: Ending index in the string (size_t)
- *
- * returns: Sub-string (char *) 
- *
- * Note: String is allocated in heap, so it must be freed.
- */
-char *substr(const char *string, size_t n1, size_t n2);
+// arena that will be used for allocating most of the things.
+static arena_T *build_main_arena;
 
-/*
- * Function: get_list_of_files(const char *path, int *count)
- * -----------------------
- *  Find all the files in the given path.
- *
- * path: Path (const char *)
- * count: Sets count to be the length of the buffer (int *)
- *
- * returns: String buffer (char **) 
- *
- * Note: String is allocated in heap, so it must be freed.
- */
-char **get_list_of_files(const char *path, int *count);
+// create arena allocator
+arena_T *init_arena(size_t n);
 
-/*
- * Function: get_list_of_files_ext(const char *path, const char *ends_with, int *count)
- * -----------------------
- *  Find all the files in the given path.
- *
- * path: Path (const char *)
- * ends_with: Extention (const char *)
- * count: Sets count to be the length of the buffer (int *)
- *
- * returns: String buffer (char **) 
- *
- * Note: String is allocated in heap, so it must be freed.
- */
-char **get_list_of_files_ext(const char *path, const char *ends_with, int *count);
+// allocate buffer on arena
+void *arena_allocate(arena_T *arena, size_t n);
 
-/*
- * Function: get_last_modification_time(const char *filename)
- * -----------------------
- *  Returns the last modified time of the given file.
- *
- * filename: Path to the file (const char *)
- *
- * returns: Modified time of time (time_t) 
- */
-time_t get_last_modification_time(const char *filename);
+// free the allocator
+void arena_free(arena_T **arena);
 
-/*
- * Function: needs_recompilation(const char *binary, const char *sources[], size_t num_sources)
- * -----------------------
- *  Returns true if binary needs to be compiled,
- *  if any of the given source has been modified after the binary is created.
- *
- * binary: Path to binary file (const char *)
- * sources: List of source files that needs to check for modification (const char *[])
- * num_sources: Length of the list (size_t) 
- *
- * returns: Returns boolean if binary needs compilation (bool) 
- */
-bool needs_recompilation(const char *binary, const char *sources[], size_t num_sources);
+// create new array
+array_T *init_array(size_t item_size);
 
-/*
- * Function: join(unsigned char sep, const char **buffer, size_t n)
- * -----------------------
- *  Join the list of string into one string and separate them by a seperator.
- *
- * binary: Separator (unsigned char)
- * buffer: List of string (const char **)
- * n: Length of the list (size_t) 
- *
- * returns: Returns new string separated by seperator (char *) 
- *
- * Note: String is allocated in the heap, so it must be freed.
- */
-char *join(unsigned char sep, const char **buffer, size_t n);
+// push new element in array
+void array_push(array_T *array, void *item);
 
-/*
- * Function: join_cstr(const char *sep, const char **buffer, size_t n)
- * -----------------------
- *  Join the list of string into one string and separate them by a seperator.
- *
- * binary: Separator (const char *)
- * buffer: List of string (const char **)
- * n: Length of the list (size_t) 
- *
- * returns: Returns new string separated by seperator (char *) 
- *
- * Note: String is allocated in the heap, so it must be freed.
- */
-char *join_cstr(const char *sep, const char **buffer, size_t n);
+// pop last element from the array
+void *array_pop(array_T *array);
 
-/*
- * Function: separate(unsigned char sep, const char *string, size_t *n)
- * -----------------------
- *  Converts single string to list of multiple string from the seperator.
- *
- * seperator: Where to break the string (unsigned char)
- * string: String (const char *)
- * n: Length of list of strings (size_t *)
- *
- * returns: List of string (char **) 
- *
- * Note: String is allocated in the heap, so it must be freed.
- */
-char **separate(unsigned char sep, const char *string, size_t *n);
+// get the element from the array
+void *array_get(array_T *array, size_t index);
 
-/*
- * Function: cmd_execute(char *first, ...)
- * -----------------------
- *  Executes shell commands, using `system`.
- *
- * first: First command (char *)
- * ...: Rest of the commands (char *)
- *
- */
-void cmd_execute(char *first, ...);
+// take n element from array
+array_T *array_take(array_T *array, unsigned int n);
 
-/*
- * Function: run_command(const char *command)
- * -----------------------
- *  Executes shell commands and returns output of the command.
- *
- * command: Command (const char *)
- *
- * returns: Returns output (char *) 
- *
- * Note: String is allocated in the heap, so it must be freed.
- */
-char *run_command(const char *command);
+// drop n element from array
+array_T *array_drop(array_T *array, unsigned int n);
 
-/*
- * Function: strlistcmp(const char *s1, const char **s2, size_t n)
- * -----------------------
- *  It compares `s1` to `s2` and `s2` is a list of string.
- *
- * s1: String to compare from (const char *)
- * s2: String2 to compare with (const char **)
- * n: Length of list of strings `s2` (size_t)
- *
- * returns: True if `s1` matches with `s2` else False;
- *
- */
-bool strlistcmp(const char *s1, const char **s2, size_t n);
+// merge two array
+array_T *array_merge(array_T *a1, array_T *a2);
 
-/*
- * Function: is_directory_exists(const char *path)
- * -----------------------
- *  Checks if path is a directory or not.
- *
- * path: Path of the directory (const char *)
- *
- * returns: True if it founds the path to be directory; else false. 
- *
- */
-bool is_directory_exists(const char *path);
+// free array
+void array_free(array_T *array);
 
-/*
- * Function: is_file_exists(const char *path)
- * -----------------------
- *  Checks if path is a file or not.
- *
- * path: Path of the file (const char *)
- *
- * returns: True if it founds the path to be file; else false. 
- *
- */
-bool is_file_exists(const char *path);
+// string join
+char *strjoin(const char *s0, const char *s1);
 
-/*
- * Function: create_directories(const char *s)
- * -----------------------
- *  Converts `s` to list of string,
- *  and checks if item of list are directory
- *  if they're not then it will create a new directory.
- *
- * s: Directories separated by a whitespace (const char *)
- *
- */
-void create_directories(const char *s);
+// string sub-string
+char *strsub(const char *s, size_t fp, size_t tp);
 
-/*
- * Function: create_directories_from_path(const char *path)
- * -----------------------
- *  Create directory from sub-path, if they do not exist already.
- *
- * path: Path `xyz/path/some/dir`, it will check if any of the sub-directory. (const char *)
- *
- */
-void create_directories_from_path(const char *path);
+// string replace
+char *strreplace(char *s, unsigned char from, unsigned char to);
 
-/*
- * Function: download(size_t n, struct download_info d_info[n])
- * -----------------------
- *  Downloads using `curl` and extract (if needed) using tar.
- *
- * n: Size of download infos. (size_t)
- * d_info: List of items (struct download_info)
- * 
-*/
-void download(size_t n, struct download_info d_info[n]);
+// convert string to array
+array_T *strtoarray(const char *s, unsigned char sep);
 
-/*
- * Function: library_static(char *cmds, char **source_files, int n, const char *out_dir, const char *libname)
- * -----------------------
- *  Create a static library.
- *
- * cmds: Command that will be added to execution, and they are the initial commands. (char *)
- * source_files: List of files. (const char **)
- * n: Length of files. (int)
- * out_dir: Output directory path. (const char *)
- * libname: Output library name. (const char *)
- *
- * 
-*/
-void library_static(char *cmds, char **source_files, int n, const char *out_dir, const char *libname);
+// convert (const char **) to (const char *)
+const char *strconvCCAtoCC(const char **CCA, size_t len, unsigned char sep);
 
-/********************************************
- * 						   DEFINITION	
-********************************************/
+// convert array to string
+const char *strconvCAtoCC(array_T *array, unsigned sep);
+
+// (if) string in array
+bool strinarray(const char *s, array_T *array);
+
+// exectue command in the shell
+bool command_execute(const char *command);
+
+// get list of files
+array_T *file_get(const char *path);
+
+// get list of files (ends with)
+array_T *file_get_end(const char *path, const char *end);
+
+// check if file exist
+bool file_exist(const char *path);
+
+// check if directory exist
+bool directory_exist(const char *path);
+
+// create new directory (it will create all directory in the path)
+void create_directory(const char *path);
+
+// get last modified time of file
+time_t get_time_from_file(const char *path);
+
+// checks if binary source has changed
+bool binary_test(const char *binary_path, array_T *source_list);
+
+/**********************************************************************************************
+*																   The Actual Implementation
+**********************************************************************************************/
+
 const char *get_term_color(TERM_KIND kind, TERM_COLOR color)
 {
 	switch (kind)
 	{
-		case TEXT: return writef("\e[0;3%dm", color);
-		case BOLD_TEXT: return writef("\e[1;3%dm", color);
-		case UNDERLINE_TEXT: return writef("\e[4;3%dm", color);
-		case BACKGROUND: return writef("\e[4%dm", color);
-		case HIGH_INTEN_BG: return writef("\e[0;10%dm", color);
-		case HIGH_INTEN_TEXT: return writef("\e[0;9%dm", color);
-		case BOLD_HIGH_INTEN_TEXT: return writef("\e[1;9%dm", color);
-		case RESET: return writef("\e[0m");
+		case TEXT: return formate_string("\e[0;3%dm", color);
+		case BOLD_TEXT: return formate_string("\e[1;3%dm", color);
+		case UNDERLINE_TEXT: return formate_string("\e[4;3%dm", color);
+		case BACKGROUND: return formate_string("\e[4%dm", color);
+		case HIGH_INTEN_BG: return formate_string("\e[0;10%dm", color);
+		case HIGH_INTEN_TEXT: return formate_string("\e[0;9%dm", color);
+		case BOLD_HIGH_INTEN_TEXT: return formate_string("\e[1;9%dm", color);
+		case RESET: return formate_string("\e[0m");
 	}
 }
 
-char *writef_function(char *s, ...)
+char *__formate_string_function__(char *s, ...)
 {
 	// allocate small size buffer
 	size_t buffer_size = 64; // bytes
-	char *buffer = (char*)malloc(buffer_size);
+	char *buffer = malloc(buffer_size);
 
 	if (buffer == NULL)
 	{
-		WARN("writef: Failed to allocate buffer.");
+		perror("failed to allocate memory for formating string: ");
 		return NULL;
 	}
 
 	va_list ap;
 	va_start(ap, s);
 
-	int nSize = vsnprintf(buffer, buffer_size, s, ap);
+	size_t nSize = vsnprintf(buffer, buffer_size, s, ap);
 	if (nSize < 0)
 	{
 		free(buffer);
@@ -407,11 +352,11 @@ char *writef_function(char *s, ...)
 
 		if (buffer == NULL)
 		{
-			WARN("writef: Failed to re-allocate buffer.");
+			perror("failed to extend buffer for allocating formated string: ");
+			va_end(ap);
+
 			return NULL;
 		}
-
-		va_end(ap);
 
 		va_start(ap, s);
 		vsnprintf(buffer, buffer_size, s, ap);
@@ -422,55 +367,308 @@ char *writef_function(char *s, ...)
 	return buffer;
 }
 
-char *substr(const char *string, size_t n1, size_t n2)
+arena_T *init_arena(size_t n)
 {
-	if (string == NULL)
+	if (n <= 0) return NULL;
+
+	arena_T *new = malloc(sizeof(struct ARENA_STRUCT));
+	if (new == NULL)
 	{
-		WARN("substr: Cannot create substr from NULL.");
+		perror("failed to allocate memory for arena: ");
 		return NULL;
 	}
 
-	size_t len = strlen(string);
+	new->buffer_size = n;
+	new->buffer = malloc(new->buffer_size);
+	new->ptr = 0;
 
-	/*
-	 * n1 and n2 must be greater than 0,
-	 * and n1 must be smaller than n2,
-	 * n2 must be smaller than total length.
-	 *
-	 * Otherwise return NULL;
-	 */
-	if (n1 < 0 && n2 < 0 && n1 >= n2 && n2 >= len)
+	if (new->buffer == NULL)
 	{
-		WARN("substr: Undefined behaviour of `n1` and `n2`.");
+		perror("failed to allocate memory for arena buffer: ");
+
+		fprintf(stderr, "trying to allocate less memory for arena buffer.\n");
+
+		while (new->buffer_size > (1 * 1024))
+		{
+			new->buffer_size /= 2;
+			fprintf(stderr, "allocating %zu for arena buffer.\n", new->buffer_size);
+
+			new->buffer = malloc(new->buffer_size);
+			if (new->buffer) return new;
+		}
+
+		fprintf(stderr, "failed to allocate less-memory for arena.\n");
 		return NULL;
 	}
 
-	char *result = (char*)malloc((n2 - n1 + 1) * sizeof(char));
-	if (result == NULL)
-	{
-		WARN("substr: Failed to allocate buffer.");
-		return NULL;
-	}
-
-	for (size_t i = 0; i < n2 - n1; ++i)
-		result[i] = string[i + n1];
-
-	result[n2 - n1] = '\0';
-
-	return result;
+	return new;
 }
 
-char **get_list_of_files(const char *path, int *count)
+void *arena_allocate(arena_T *arena, size_t n)
 {
-	int internalCounter = 0;
-	char **buffer = (char**)malloc(sizeof(char**) * internalCounter);
+	if (arena->ptr + n < arena->buffer_size)
+	{
+		void *addr = arena->buffer + arena->ptr;
+		arena->ptr += n;
+
+		return addr;
+	}
+
+	fprintf(stderr, "max memory reached for arena.\n");
+	return NULL;
+}
+
+void arena_free(arena_T **arena)
+{
+	if (*arena)
+		free(((arena_T*)*arena)->buffer);
+}
+
+array_T *init_array(size_t item_size)
+{
+	array_T *array = malloc(sizeof(struct ARRAY_STRUCT));
+	if (array == NULL)
+	{
+		perror("failed to allocate memory for array: ");
+		return NULL;
+	}
+
+	// initially allocate enough for 10 elements.
+	array->len = 10;
+	array->item_size = item_size;
+	array->buffer = malloc(array->item_size * array->len);
+	if (array->buffer == NULL)
+	{
+		perror("failed to allocate memory for array buffer: ");
+		return NULL;
+	}
+
+	array->index = 0;
+	array_allocated_counter++;
+
+	return array;
+}
+
+void array_push(array_T *array, void *item)
+{
+	if (item == NULL) return;
+
+	if (array->buffer == NULL)
+	{
+		fprintf(stderr, "cannot push element buffer is not allocated.\n");
+		return;
+	}
+
+	if (array->index >= array->len)
+		array->buffer = realloc(array->buffer, (array->len + 10) * array->item_size);
+
+	array->buffer[array->index++] = item;
+}
+
+void *array_pop(array_T *array)
+{
+	if (array->index <= 0) return NULL;
+	return array->buffer[--array->index];
+}
+
+void *array_get(array_T *array, size_t index)
+{
+	if (index >= array->index) return NULL;
+	return array->buffer[index];
+}
+
+array_T *array_take(array_T *array, unsigned int n)
+{
+	array_T *n_array = init_array(array->item_size);
+
+	for (size_t i = 0; i < n; ++i)
+	{
+		void *item = array_get(array, i);
+		if (item)
+			array_push(n_array, item);
+	}
+
+	return n_array;
+}
+
+array_T *array_drop(array_T *array, unsigned int n)
+{
+	array_T *n_array = init_array(array->item_size);
+
+	for (size_t i = n; i < array->index; ++i)
+	{
+		void *item = array_get(array, i);
+		if (item)
+			array_push(n_array, item);
+	}
+
+	return n_array;
+}
+
+array_T *array_merge(array_T *a1, array_T *a2)
+{
+	if (a1->item_size != a2->item_size)
+	{
+		printf("both array must have similiar array item size.\n");
+		return NULL;
+	}
+
+	array_T *na = init_array(a1->item_size);
+	for (size_t i = 0; i < a1->index; ++i)
+		array_push(na, array_get(a1, i));
+
+	for (size_t i = 0; i < a2->index; ++i)
+		array_push(na, array_get(a2, i));
+
+	return na;
+}
+
+// TODO(NOTE): it is not well tested, it might have memory leaks.
+void array_free(array_T *array)
+{
+	if (array->buffer)
+	{
+		free(array->buffer);
+		array_allocated_counter--;
+	}
+}
+
+char *strjoin(const char *s0, const char *s1)
+{
+	char *s = arena_allocate(
+			build_main_arena,
+			strlen(s0) + strlen(s1) + 1
+	);
+
+	s = strcpy(s, s0);
+	s = strcat(s, s1);
+
+	return s;
+}
+
+char *strsub(const char *s, size_t fp, size_t tp)
+{
+	if (fp >= tp) return NULL;
+
+	char *sub = arena_allocate(build_main_arena, (tp - fp) + 1);
+	for (size_t i = 0; i < tp - fp; ++i)
+		sub[i] = s[fp + i];
+
+	sub[(tp - fp)] = '\0';
+	
+	return sub;
+}
+
+char *strreplace(char *s, unsigned char from, unsigned char to)
+{
+	for (size_t i = 0; i < strlen(s); ++i)
+		if (s[i] == from)
+			s[i] = to;
+
+	return s;
+}
+
+array_T *strtoarray(const char *s, unsigned char sep)
+{
+	array_T *array = init_array(sizeof(const char *));
+
+	size_t pos = 0;
+	for (size_t i = 0; i < strlen(s); ++i)
+	{
+		if (s[i] == sep)
+		{
+			char *string = strsub(s, pos, i);
+			array_push(array, string);
+			pos = i + 1;
+		}
+	}
+
+	char *string = strsub(s, pos, strlen(s));
+	array_push(array, string);
+
+	return array;
+}
+
+const char *strconvCCAtoCC(const char **CCA, size_t len, unsigned char sep)
+{
+	size_t total_size_of_string = 0;
+
+	for (size_t i = 0; i < len; ++i)
+		total_size_of_string += strlen(CCA[i]) + 1;
+
+	char *string = arena_allocate(build_main_arena, total_size_of_string + 1);
+	size_t pos = 0;
+	for (size_t i = 0; i < len; ++i)
+	{
+		string = strcat(string, CCA[i]);
+		pos += strlen(CCA[i]) + 1;
+		string[pos - 1] = sep;
+	}
+
+	string[total_size_of_string] = '\0';
+
+	return string;
+}
+
+const char *strconvCAtoCC(array_T *array, unsigned sep)
+{
+	size_t total_size_of_string = 0;
+
+	for (size_t i = 0; i < array->index; ++i)
+	{
+		const char *s = array->buffer[i];
+		total_size_of_string += strlen(s) + 1;
+	}
+
+	char *string = arena_allocate(build_main_arena, total_size_of_string + 1);
+	size_t pos = 0;
+	for (size_t i = 0; i < array->index; ++i)
+	{
+		const char *s = array->buffer[i];
+		string = strcat(string, s);
+		pos += strlen(s) + 1;
+		string[pos - 1] = sep;
+	}
+
+	string[total_size_of_string] = '\0';
+
+	return string;
+}
+
+bool strinarray(const char *s, array_T *array)
+{
+	for (size_t i = 0; i < array->index; ++i)
+	{
+		if (!strcmp(s, array_get(array, i)))
+			return true;
+	}
+
+	return false;
+}
+
+bool command_execute(const char *command)
+{
+	if (command == NULL) return false;
+
+	return system(command);
+}
+
+array_T *file_get(const char *path)
+{
+	bool hash_slash = false;
+	char slash = strsub(path, strlen(path) - 1, strlen(path))[0];
+
+	if (slash == '/' || slash == '\\')
+		hash_slash = true;
 
 	DIR *dir = opendir(path);
 	if (dir == NULL)
 	{
-		ERROR("Directory `%s` does not exist.", path);
+		perror(formate_string("Directory `%s` does not exist.", path));
 		return NULL;
 	}
+
+	array_T *buffer = init_array(sizeof(const char *));
 
 	struct dirent *data;
 	while ((data = readdir(dir)) != NULL)
@@ -482,71 +680,118 @@ char **get_list_of_files(const char *path, int *count)
 #		endif
 		{
 			char *fileName = data->d_name;
-
-			internalCounter++;
-			buffer = (char**)realloc(buffer, internalCounter * sizeof(char**));
-
-			buffer[internalCounter - 1] = writef("%s%s", path, fileName);
+			if (hash_slash)
+				array_push(buffer, (void*)formate_string("%s%s", path, fileName));
+			else
+#				if __unix__
+					array_push(buffer, (void*)formate_string("%s/%s", path, fileName));
+#				elif __WIN32__
+					array_push(buffer, (void*)formate_string("%s\\%s", path, fileName));
+#				endif
 		}
 	}
 
-	*count = internalCounter;
 	return buffer;
 }
 
-char **get_list_of_files_ext(const char *path, const char *ends_with, int *count)
+array_T *file_get_end(const char *path, const char *end)
 {
-	char **file_list = get_list_of_files(path, count);
+	array_T *files = file_get(path);
+	array_T *files_with_excep = init_array(sizeof(const char *));
 
-	size_t n = 0;
-	for (int i = 0; i < *count; ++i)
+	for (size_t i = 0; i < files->index; ++i)
 	{
-		size_t fl_len = strlen(file_list[i]);
-		size_t ew_len = strlen(ends_with);
+		char *file = files->buffer[i];
+		char *substr = strsub(file, strlen(file) - strlen(end), strlen(file));
 
-		if (!strcmp(ends_with, substr(file_list[i], fl_len - ew_len, fl_len)))
-			n++;
+		if (!strcmp(substr, end))
+			array_push(files_with_excep, file);
 	}
 
-	char **buffer = malloc(sizeof(char**) * n); n = 0;
-	for (int i = 0; i < *count; ++i)
-	{
-		size_t fl_len = strlen(file_list[i]);
-		size_t ew_len = strlen(ends_with);
+	array_free(files);
+	return files_with_excep;
+}
 
-		if (!strcmp(ends_with, substr(file_list[i], fl_len - ew_len, fl_len)))
+bool file_exist(const char *path)
+{
+	FILE *file = fopen(path, "r");
+	if (file == NULL) return false;
+
+	free(file);
+	return true;
+}
+
+bool directory_exist(const char *path)
+{
+	DIR *dir = opendir(path);
+	if (dir == NULL) return false;
+
+	free(dir);
+	return true;
+}
+
+void create_directory(const char *path)
+{
+	size_t pos = 0;
+	for (size_t i = 0; i < strlen(path); ++i)
+	{
+		if (path[i] == '/')
 		{
-			buffer[n] = malloc(sizeof(char) * fl_len);
-			buffer[n++] = file_list[i];
+			char *pre = strsub(path, 0, pos);
+			char *sub = strsub(path, pos, i);
+
+			if (sub)
+			{
+				const char *final_dir_path = pre ?
+					formate_string("mkdir %s%s", pre, sub) :
+					formate_string("mkdir %s", sub);
+
+				if (!directory_exist(strsub(final_dir_path, 6, strlen(final_dir_path))))
+					command_execute(final_dir_path);
+			}
+
+			pos = i + 1;
 		}
 	}
 
-	*count = n;
+	char *pre = strsub(path, 0, pos);
+	char *sub = strsub(path, pos, strlen(path));
+	if (sub)
+	{
+		const char *final_dir_path = pre ?
+			formate_string("mkdir %s%s", pre, sub) :
+			formate_string("mkdir %s", sub);
 
-	return buffer;
+		if (!directory_exist(strsub(final_dir_path, 6, strlen(final_dir_path))))
+			command_execute(final_dir_path);
+	}
 }
 
-time_t get_last_modification_time(const char *filename)
+time_t get_time_from_file(const char *path)
 {
 	struct stat file_stat;
-	if (stat(filename, &file_stat) == -1) {
-		perror(writef("Failed to get file status: %s, ", filename));
+	if (stat(path, &file_stat) == -1) {
+		perror(formate_string("Failed to get file status: %s, ", path));
 		return (time_t)(-1);  // Return -1 on error
 	}
 
 	return file_stat.st_mtime;
 }
 
-bool needs_recompilation(const char *binary, const char *sources[], size_t num_sources)
+bool binary_test(const char *binary_path, array_T *source_list)
 {
-	time_t binary_timestamp = get_last_modification_time(binary);
+	time_t binary_timestamp = get_time_from_file(binary_path);
 	if (binary_timestamp == (time_t)(-1))
 		return true;
 
-	for (size_t i = 0; i < num_sources; ++i) {
-		time_t source_timestamp = get_last_modification_time(sources[i]);
+	for (size_t i = 0; i < source_list->index; ++i) {
+		time_t source_timestamp = get_time_from_file(array_get(source_list, i));
 		if (source_timestamp == (time_t)(-1)) {
-			fprintf(stderr, "Failed to get modification time for source file: %s\n", sources[i]);
+			fprintf(
+					stderr,
+					"Failed to get modification time for source file: %s\n",
+					array_get(source_list, i)
+			);
 			continue;
 		}
 
@@ -554,378 +799,121 @@ bool needs_recompilation(const char *binary, const char *sources[], size_t num_s
 			return true;
 	}
 
-	INFO("`%s` is already updated.", binary);
-
 	return false;
 }
 
-char *join(unsigned char sep, const char **buffer, size_t n)
+hash_T *init_hash(void)
 {
-	/* *** BUFFER ALLOCATOR *** */
-
-	/*
-		* How this is going to work?
-		* Well, we define a *pool, and fill it up.
-		* If pools fills up, we re-alloc it with the same size.
-	*/
-
-	// set the max size for pool
-	const size_t POOL_SIZE = 64 * 1024;
-
-	char *pool = (char*)malloc(POOL_SIZE); // 65536 bytes
-	if (pool == NULL) printf("Failed to create pool for joining text.\n");
-
-	// set pool to NULL
-	pool = (char*)memset(pool, 0, POOL_SIZE);
-
-	size_t current_pool_size = POOL_SIZE;
-	size_t ptr_in_pool = 0; // it will keep track where we are in the pool.	
-
-	for (size_t i = 0; i < n; ++i)
-	{
-		const char *string = writef("%s%c", buffer[i], sep);
-		size_t len = strlen(string) + 1;
-		
-		if ((ptr_in_pool + len) >= current_pool_size)
-		{
-			current_pool_size += POOL_SIZE;
-			pool = (char*)realloc(pool, current_pool_size);
-		}
-
-		ptr_in_pool += len;
-		pool = strcat(pool, string);
-		pool[ptr_in_pool + 1] = '\0';
-	}
-
-	// create a final buffer to be returned.
-	char *bf = (char*)malloc(ptr_in_pool + 1);
-	bf = strncpy(bf, pool, ptr_in_pool);
-	bf[ptr_in_pool] = '\0'; // don't forget to add null ptr, it is pain in the ass.
-	
-	// we don't need pool because we have already created smaller pool of content size.
-	free(pool);
-
-	return bf;
-}
-
-char *join_cstr(const char *sep, const char **buffer, size_t n)
-{
-	/* *** BUFFER ALLOCATOR *** */
-
-	/*
-		* How this is going to work?
-		* Well, we define a *pool, and fill it up.
-		* If pools fills up, we re-alloc it with the same size.
-	*/
-
-	// set the max size for pool
-	const size_t POOL_SIZE = 64 * 1024;
-
-	char *pool = (char*)malloc(POOL_SIZE); // 65536 bytes
-	if (pool == NULL) printf("Failed to create pool for joining text.\n");
-
-	// set pool to NULL
-	pool = (char*)memset(pool, 0, POOL_SIZE);
-
-	size_t current_pool_size = POOL_SIZE;
-	size_t ptr_in_pool = 0; // it will keep track where we are in the pool.	
-
-	for (size_t i = 0; i < n; ++i)
-	{
-		const char *string = writef("%s%s", buffer[i], sep);
-		size_t len = strlen(string);
-		
-		if ((ptr_in_pool + len) >= current_pool_size)
-		{
-			current_pool_size += POOL_SIZE;
-			pool = (char*)realloc(pool, current_pool_size);
-		}
-
-		ptr_in_pool += len;
-		pool = strcat(pool, string);
-		pool[ptr_in_pool + 1] = '\0';
-	}
-
-	// create a final buffer to be returned.
-	char *bf = (char*)malloc(ptr_in_pool);
-	bf = strncpy(bf, pool, ptr_in_pool);
-	bf[ptr_in_pool] = '\0'; // don't forget to add null ptr, it is pain in the ass.
-	
-	// we don't need pool because we have already created smaller pool of content size.
-	free(pool);
-
-	return bf;
-}
-
-char **separate(unsigned char sep, const char *string, size_t *n)
-{
-	size_t len = 0;
-
-	for (size_t i = 0; i < strlen(string); ++i)
-		if (string[i] == sep) len++;
-
-	len++;
-
-	*n = len;
-	char **buffer = (char**)malloc(len * sizeof(char**));
-
-	size_t p1 = 0;
-	size_t p2 = 0;
-	size_t b_idx = 0;
-
-	for (; p2 < strlen(string); ++p2)
-	{
-		if (string[p2] == sep)
-		{
-			char *sub_str = substr(string, p1, p2);
-			size_t sub_str_len = strlen(sub_str) + 1;
-
-			buffer[b_idx] = (char*)malloc(sub_str_len * sizeof(char));
-			strcpy(buffer[b_idx], sub_str);
-
-			free(sub_str);
-			p1 = p2 + 1;
-			b_idx++;
-		}
-	}
-
-	char *sub_str = substr(string, p1, strlen(string));
-	size_t sub_str_len = strlen(sub_str) + 1;
-
-	buffer[b_idx] = (char*)malloc(sub_str_len * sizeof(char));
-	strcpy(buffer[b_idx], sub_str);
-
-	free(sub_str);
-
-	return buffer;
-}
-
-void cmd_execute(char *first, ...)
-{
-	int length = 0;
-
-	if (first == NULL)
-		ERROR("No arguments given to CMD, exiting.");
-
-	va_list args;
-	va_start(args, first);
-	for (
-			char *next = va_arg(args, char*);
-			next != NULL;
-			next = va_arg(args, char*)) {
-		length++;
-	}
-	va_end(args);
-
-	char *buffer[length + 1];
-
-	length = 0;
-	buffer[length++] = first;
-
-    va_start(args, first);
-	for (
-			char *next = va_arg(args, char*);
-			next != NULL;
-			next = va_arg(args, char*)) {
-		buffer[length++] = next;
-	}
-	va_end(args);
-	
-	char *b = join(' ', (const char**)buffer, length);
-
-#if CMD_DEBUG_OUTPUT
-	INFO("CMD: %s", b);
-#endif
-
-	int status = system(b);
-	if (status != 0)
-	{
-		ERROR("Failed: %s", b);
-		exit(EXIT_FAILURE);
-		free(b);
-	}
-
-	free(b);
-}
-
-char *run_command(const char *command)
-{
-	char* result = NULL;
-	size_t size = 0;
-	FILE* fp = popen(command, "r");
-	if (fp == NULL)
-	{
-		perror("popen failed");
+	hash_T *hash = arena_allocate(build_main_arena, sizeof(struct HASH_STRUCT));
+	if (!hash)
 		return NULL;
-	}
 
-	// Read the output a line at a time
-	char buffer[128];
-	while (fgets(buffer, sizeof(buffer), fp) != NULL)
+	hash->length = 0;
+	hash->capacity = MAX_HASH_TABLE_CAPACITY;
+	hash->buffer = arena_allocate(build_main_arena, sizeof(hash_entry) * hash->capacity);
+	if (!hash->buffer)
+		return NULL;
+
+	return hash;
+}
+
+void hash_free(hash_T *hash)
+{
+	free(hash->keys);
+	free(hash->buffer);
+	free(hash);
+}
+
+void hash_set(hash_T *hash, const char *key, void *value)
+{
+	unsigned long long magic_number = hash_function(key);
+	ssize_t index = (ssize_t)(magic_number & (MAX_HASH_TABLE_CAPACITY - 1));
+
+	int if_found = 0;
+
+	while (hash->buffer[index].key != NULL)
 	{
-		size_t len = strlen(buffer);
-		char* new_result = realloc(result, size + len + 1);
-		if (new_result == NULL)
+		if (strcmp(key, hash->buffer[index].key) == 0)
 		{
-			perror("realloc failed");
-			free(result);
-			pclose(fp);
-			return NULL;
-		}
-		result = new_result;
-		memcpy(result + size, buffer, len);
-		size += len;
-		result[size] = '\0';
-	}
-
-	pclose(fp);
-	return result;
-}
-
-bool strlistcmp(const char *s1, const char **s2, size_t n)
-{
-	for (size_t i = 0; i < n; ++i)
-		if (!strcmp(s1, s2[i])) return true;
-
-	return false;
-}
-
-bool is_directory_exists(const char *path)
-{
-	char *t = run_command(writef("test -d %s && echo 0 || echo 1", path));
-	return !atoi(t);
-}
-
-bool is_file_exists(const char *path)
-{
-	char *t = run_command(writef("test -f %s && echo 0 || echo 1", path));
-	return !atoi(t);
-}
-
-void create_directories(const char *s)
-{
-	size_t n;
-	char **bf = separate(' ', s, &n);
-
-	for (size_t i = 0; i < n; ++i)
-	{
-		if (!is_directory_exists(bf[i]))
-			CMD("mkdir", bf[i]);
-	}
-}
-
-void create_directories_from_path(const char *path)
-{
-	size_t n;
-	char **d = separate('/', path, &n);
-
-	size_t p2 = 0;
-	for (size_t i = 0; i < n; ++i)
-	{
-		char *d_name = d[i];
-		p2 += strlen(d_name) + 1;
-
-		char *ss = substr(path, 0, p2);
-
-		if (!is_directory_exists(ss))
-			CMD("mkdir", ss);
-
-		free(ss);
-	}
-
-	free(d);
-}
-
-void download(size_t n, struct download_info d_info[n])
-{
-	for (size_t i = 0; i < n; ++i)
-	{
-		struct download_info df = d_info[i];
-
-		create_directories_from_path(df.out_dir);
-
-		const char *path = writef("%s%s", df.out_dir, df.filename);
-		if (!is_file_exists(path))
-			CMD("curl", "-L", "-o", path, df.url);
-
-		if (df.extract && !is_directory_exists(df.extract_in_dir))
-		{
-			create_directories_from_path(df.extract_in_dir);
-			CMD((char*)df.tar_command, (char*)path, "-C", df.extract_in_dir, "-v");
-		}
-	}
-}
-
-void library_static(char *cmds, char **files, int n, const char *out_dir, const char *libname)
-{
-	bool lib_needs_to_compile = false;
-
-	for (int i = 0; i < n; ++i)
-	{
-		size_t path_len;
-		char **paths = separate('/', writef("%s%s", out_dir, files[i]), &path_len);
-
-		size_t len = strlen(files[i]);
-		char *path = substr(files[i], 0, len - strlen(paths[path_len - 1]));
-
-		create_directories_from_path(writef("%s%s", out_dir, path));
-
-		if (needs_recompilation(writef("%s%s.o", out_dir, files[i]), (const char *[]){ files[i] }, 1))
-		{
-			CMD(cmds, "-c", files[i], "-o", writef("%s%s.o", out_dir, files[i]));
-			lib_needs_to_compile = true;
+			hash->buffer[index].value = value;
+			if_found = 1;
+			break;
 		}
 
-		free(path);
-		free(paths);
+		index++;
+		if (index >= MAX_HASH_TABLE_CAPACITY) index = 0;
 	}
 
-	if (lib_needs_to_compile)
+	if (if_found == 0)
 	{
-		char **buffer = malloc(sizeof(char*) * n);
-		for (int i = 0; i < n; ++i)
-		{
-			char *s = writef("%s%s.o", out_dir, files[i]);
-			size_t len = strlen(s) + 1;
+		hash->buffer[index].key = (const char*)strdup(key);
+		hash->buffer[index].value = value;
+		hash->length++;
 
-			buffer[i] = malloc(sizeof(char) * len);
-			strcpy(buffer[i], s);
+		if (hash->keys)
+			hash->keys = realloc(hash->keys, sizeof(char*) * hash->length);
+		else
+			hash->keys = calloc(1, sizeof(char*));
 
-			free(s);
-		}
-
-		char *f = join(' ', (const char **)buffer, n);
-		CMD("ar", "rcs", writef("%s%s", out_dir, libname), f);
-
-		free(buffer);
-		free(f);
+		hash->keys[hash->length - 1] = (char*)strdup(key);
 	}
 }
 
-
-
-/*
- * build_itself()
- *
- * It is a function that gets called automatically,
- * it checks the status of current build source and build binary.
- * If it needs recompilition then it would do it.
-*/
-void build_itself() __attribute__((constructor));
-void build_itself()
+void* hash_get(hash_T *hash, const char *key)
 {
-	const char *sources[] = { BUILD_SOURCE_FILE, "build.h" };
-	if (needs_recompilation(BUILD_OUTPUT_FILE, sources, sizeof(sources) / sizeof(sources[0])))
+	unsigned long long magic_number = hash_function(key);
+	ssize_t index = (ssize_t)(magic_number & (MAX_HASH_TABLE_CAPACITY - 1));
+
+	while (hash->buffer[index].key != NULL)
 	{
-		INFO("Source file has changed, it needs to be recompiled.");
-		CMD("gcc", BUILD_SOURCE_FILE, "-I.", "-o", writef("%s.new", BUILD_OUTPUT_FILE));
-		CMD("mv", BUILD_OUTPUT_FILE, writef("%s.old", BUILD_OUTPUT_FILE));
-		CMD("mv", writef("%s.new", BUILD_OUTPUT_FILE), BUILD_OUTPUT_FILE);
-#ifdef __unix__
-		CMD(writef("./%s", BUILD_OUTPUT_FILE));
-#endif
-		exit(0);
+		if (strcmp(key, hash->buffer[index].key) == 0)
+			return hash->buffer[index].value;
+
+		index++;
+		if (index >= MAX_HASH_TABLE_CAPACITY) index = 0;
 	}
+	
+	return NULL;
 }
 
-#endif // IMPLEMENT_BUILD_C
+const char **hash_bucket(hash_T *hash)
+{
+	return (const char**)hash->keys;
+}
+
+void exit_build_system(int status_code)
+{
+	if (array_allocated_counter > 0)
+		WARN("You haven't freed %d array, which may result in memory leaks.", array_allocated_counter);
+
+	free(build_main_arena->buffer);
+	free(build_main_arena);
+
+	exit(status_code);
+}
+
+// main entry
+int main(int argc, char **argv)
+{
+	build_main_arena = init_arena(8 * 1024 * 1024); // allocating 8 mb, (hopefully it will be enough)
+	
+	const char *files_string = formate_string("%s build.h", build_source);
+	array_T *files = strtoarray(files_string, ' ');
+
+	if (binary_test(build_bin, files))
+	{
+		bool status = command_execute(formate_string("gcc %s -I. -o %s", build_source, build_bin));
+		if (!status) INFO("sucessfully updated binary of build system. Re-run to see the changes.");
+		else ERROR("failed to update the binary of build system.");
+
+		return 0;
+	}
+
+	array_free(files);
+
+	build_start(argc, argv);
+
+	exit_build_system(0);
+}
+
+#endif // IMPLEMENT_BUILD_H
