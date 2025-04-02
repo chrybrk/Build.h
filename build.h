@@ -3,14 +3,11 @@
 *
 * FEATURES:
 * 	- No external dependencies.
-* 	- Automatic memory management using arena allocator.
 * 	- Automatic updates binary of build system: once compiled upon running it will check for any updates in the build-system.
-* 	- Arena allocator and Dynamic array.
-* 	- String function: join, seperate, sub-string.
+* 	- Generic dynamic array and generic hashmap.
+* 	- String function: join, seperate, sub-string, convert to array.
 * 	- Get list of files, Create directories, check if files has been modified.
 * 	- Execute commands with strings, fromated strings.
-*
-* NOTES:
 *
 * MIT License
 *
@@ -51,6 +48,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <sys/wait.h>
+#include <time.h>
 
 // called at the end of scope
 #define defer(func) __attribute__((cleanup(func)))
@@ -61,7 +59,7 @@
 // log-system
 #define INFO(...) printf("%s[BUILD :: INFO]:%s %s\n", get_term_color(TEXT, GREEN), get_term_color(RESET, 0), formate_string(__VA_ARGS__))
 #define WARN(...) printf("%s[BUILD :: WARN]:%s %s\n", get_term_color(TEXT, YELLOW), get_term_color(RESET, 0), formate_string(__VA_ARGS__))
-#define ERROR(...) printf("%s[BUILD :: ERROR]:%s %s\n", get_term_color(TEXT, RED), get_term_color(RESET, 0), formate_string(__VA_ARGS__)), exit(1);
+#define ERROR(...) printf("%s[BUILD :: ERROR]:%s %s\n", get_term_color(TEXT, RED), get_term_color(RESET, 0), formate_string(__VA_ARGS__))
 
 #define LOAD_FACTOR 0.6
 #define POWER_FACTOR 1.5
@@ -263,6 +261,18 @@ void *init_hm(void *KVs, size_t KV_size, size_t inital_capacity, hash_function_t
 // fnv-1a hash function
 uint64_t fnv_1a_hash(void *bytes, size_t size);
 
+//-----------------------------------------------------------------------------
+// MurmurHash3 was written by Austin Appleby, and is placed in the public
+// domain. The author hereby disclaims copyright to this source code.
+//
+// Murmur3_86_128
+//-----------------------------------------------------------------------------
+// MURMUR3_86_128 hash function
+uint64_t MM86128(void *key, size_t len);
+
+// MURMUR3_64
+uint64_t MURMUR3_64(void *key, size_t len);
+
 // memory compare for two pointers
 int cmp_hash(void *a, void *b, size_t size);
 
@@ -411,7 +421,7 @@ bool execute(const char *command)
 {
 	if (command == NULL) return false;
 	INFO("$ %s", command);
-	return system(command);
+	return !system(command);
 }
 
 bool is_binary_old(const char *bin_path, const char **array)
@@ -663,6 +673,126 @@ uint64_t fnv_1a_hash(void *bytes, size_t size)
 	return h;
 }
 
+uint64_t MURMUR3_64(void *key, size_t len)
+{
+    const uint8_t *data = (const uint8_t *)key;
+    const int nblocks = len / 8;
+    uint64_t h1 = 0xcbf29ce484222325;
+    const uint64_t c1 = 0x87c37b91114253d5;
+    const uint64_t c2 = 0x4cf5ad432745937f;
+
+    // Process each 8-byte block
+    const uint64_t *blocks = (const uint64_t *)(data);
+    for (int i = 0; i < nblocks; i++) {
+        uint64_t k1 = blocks[i];
+
+        // Mix the block
+        k1 *= c1;
+        k1 = (k1 << 31) | (k1 >> (64 - 31)); // Rotate left
+        k1 *= c2;
+        h1 ^= k1;
+        h1 = (h1 << 27) | (h1 >> (64 - 27)); // Rotate left
+        h1 = h1 * 5 + 0x52dce729;
+    }
+
+    // Handle remaining bytes
+    const uint8_t *tail = (const uint8_t *)(data + nblocks * 8);
+    uint64_t k1 = 0;
+
+    switch (len & 7) {
+        case 7: k1 ^= (uint64_t)(tail[6]) << 48;
+        case 6: k1 ^= (uint64_t)(tail[5]) << 40;
+        case 5: k1 ^= (uint64_t)(tail[4]) << 32;
+        case 4: k1 ^= (uint64_t)(tail[3]) << 24;
+        case 3: k1 ^= (uint64_t)(tail[2]) << 16;
+        case 2: k1 ^= (uint64_t)(tail[1]) << 8;
+        case 1: k1 ^= (uint64_t)(tail[0]);
+                k1 *= c1;
+                k1 = (k1 << 31) | (k1 >> (64 - 31)); // Rotate left
+                k1 *= c2;
+                h1 ^= k1;
+    }
+
+    // Finalization
+    h1 ^= len;
+    h1 ^= h1 >> 33;
+    h1 *= 0xff51af45ff4a7c15;
+    h1 ^= h1 >> 33;
+    h1 *= 0xc4ceb9fe1a85ec53;
+    h1 ^= h1 >> 33;
+
+    return h1;
+}
+
+uint64_t MM86128(void *key, size_t len)
+{
+#define	ROTL32(x, r) ((x << r) | (x >> (32 - r)))
+#define FMIX32(h) h^=h>>16; h*=0x85ebca6b; h^=h>>13; h*=0xc2b2ae35; h^=h>>16;
+		const uint32_t seed = 0x811c9dc5;
+    const uint8_t * data = (const uint8_t*)key;
+    const int nblocks = len / 16;
+    uint32_t h1 = seed;
+    uint32_t h2 = seed;
+    uint32_t h3 = seed;
+    uint32_t h4 = seed;
+    uint32_t c1 = 0x239b961b; 
+    uint32_t c2 = 0xab0e9789;
+    uint32_t c3 = 0x38b34ae5; 
+    uint32_t c4 = 0xa1e38b93;
+    const uint32_t * blocks = (const uint32_t *)(data + nblocks*16);
+    for (int i = -nblocks; i; i++) {
+        uint32_t k1 = blocks[i*4+0];
+        uint32_t k2 = blocks[i*4+1];
+        uint32_t k3 = blocks[i*4+2];
+        uint32_t k4 = blocks[i*4+3];
+        k1 *= c1; k1  = ROTL32(k1,15); k1 *= c2; h1 ^= k1;
+        h1 = ROTL32(h1,19); h1 += h2; h1 = h1*5+0x561ccd1b;
+        k2 *= c2; k2  = ROTL32(k2,16); k2 *= c3; h2 ^= k2;
+        h2 = ROTL32(h2,17); h2 += h3; h2 = h2*5+0x0bcaa747;
+        k3 *= c3; k3  = ROTL32(k3,17); k3 *= c4; h3 ^= k3;
+        h3 = ROTL32(h3,15); h3 += h4; h3 = h3*5+0x96cd1c35;
+        k4 *= c4; k4  = ROTL32(k4,18); k4 *= c1; h4 ^= k4;
+        h4 = ROTL32(h4,13); h4 += h1; h4 = h4*5+0x32ac3b17;
+    }
+    const uint8_t * tail = (const uint8_t*)(data + nblocks*16);
+    uint32_t k1 = 0;
+    uint32_t k2 = 0;
+    uint32_t k3 = 0;
+    uint32_t k4 = 0;
+    switch(len & 15) {
+    case 15: k4 ^= tail[14] << 16; /* fall through */
+    case 14: k4 ^= tail[13] << 8; /* fall through */
+    case 13: k4 ^= tail[12] << 0;
+             k4 *= c4; k4  = ROTL32(k4,18); k4 *= c1; h4 ^= k4;
+             /* fall through */
+    case 12: k3 ^= tail[11] << 24; /* fall through */
+    case 11: k3 ^= tail[10] << 16; /* fall through */
+    case 10: k3 ^= tail[ 9] << 8; /* fall through */
+    case  9: k3 ^= tail[ 8] << 0;
+             k3 *= c3; k3  = ROTL32(k3,17); k3 *= c4; h3 ^= k3;
+             /* fall through */
+    case  8: k2 ^= tail[ 7] << 24; /* fall through */
+    case  7: k2 ^= tail[ 6] << 16; /* fall through */
+    case  6: k2 ^= tail[ 5] << 8; /* fall through */
+    case  5: k2 ^= tail[ 4] << 0;
+             k2 *= c2; k2  = ROTL32(k2,16); k2 *= c3; h2 ^= k2;
+             /* fall through */
+    case  4: k1 ^= tail[ 3] << 24; /* fall through */
+    case  3: k1 ^= tail[ 2] << 16; /* fall through */
+    case  2: k1 ^= tail[ 1] << 8; /* fall through */
+    case  1: k1 ^= tail[ 0] << 0;
+             k1 *= c1; k1  = ROTL32(k1,15); k1 *= c2; h1 ^= k1;
+             /* fall through */
+    };
+    h1 ^= len; h2 ^= len; h3 ^= len; h4 ^= len;
+    h1 += h2; h1 += h3; h1 += h4;
+    h2 += h1; h3 += h1; h4 += h1;
+    FMIX32(h1); FMIX32(h2); FMIX32(h3); FMIX32(h4);
+    h1 += h2; h1 += h3; h1 += h4;
+    h2 += h1; h3 += h1; h4 += h1;
+    return (((uint64_t)h2)<<32)|h1;
+}
+
 // memory compare for two pointers
 int cmp_hash(void *a, void *b, size_t size)
 {
@@ -689,6 +819,7 @@ void *__hashmap_get_KVs__(void *KVs)
 	return KVs + (offsetof(__hashmap_t, index) + sizeof(((__hashmap_t*)0)->index));
 }
 
+#ifdef BUILD_ITSELF
 void build_itself() __attribute__((constructor));
 void build_itself()
 {
@@ -700,5 +831,6 @@ void build_itself()
 		exit(0);
 	}
 }
+#endif // BUILD_ITSELF
 
 #endif // IMPLEMENT_BUILD_H
