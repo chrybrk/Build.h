@@ -2,11 +2,11 @@
 
 `build.h` is a single-header library that acts as a build system, it works more-or-less like shell-script, with many built-in features:
 
-- `CMD`
+- `Execute`
 - `INFO`
 - `WARN`
 - `ERROR`
-- `writef`
+- `formate_string`
 - `substr`
 - `get_list_of_files`
 - `get_list_of_files_ext`
