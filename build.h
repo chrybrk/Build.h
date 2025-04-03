@@ -62,7 +62,7 @@
 #define ERROR(...) printf("%s[BUILD :: ERROR]:%s %s\n", get_term_color(TEXT, RED), get_term_color(RESET, 0), formate_string(__VA_ARGS__))
 
 #define LOAD_FACTOR 0.6
-#define POWER_FACTOR 1.5
+#define POWER_FACTOR 2
 
 #define darray_push(array, item) { 																																	\
 	__dynamic_array_t *meta = __darray_get_meta__(array); 																					\
@@ -78,74 +78,74 @@
 #define darray_free(array) free(__darray_get_meta__(array))
 #define darray_get_length(array) (((__dynamic_array_t*)__darray_get_meta__(array))->index)
 
-#define __hm_realloc__(KVs, KV) { \
-	__hashmap_t *meta = __hashmap_get_meta__(KVs); \
-	if (((float)meta->index / (float)meta->count) >= LOAD_FACTOR) { \
-		meta->count *= POWER_FACTOR; \
-		struct bucket *buckets = malloc(sizeof(struct bucket) * meta->count); \
-		for (size_t i = 0; i < meta->count / POWER_FACTOR; ++i) { \
-			struct bucket bkt = meta->buckets[i]; \
+#define hm_put(map, KV) {\
+	hashmap_t *hm = __hashmap_get_meta__(map); \
+	if (((float)hm->index / (float)hm->count) >= LOAD_FACTOR) { \
+		hm->count *= POWER_FACTOR; \
+		struct bucket *buckets = malloc(sizeof(struct bucket) * hm->count); \
+		memset(buckets, 0, sizeof(struct bucket) * hm->count); \
+		for (size_t i = 0; i < hm->count / POWER_FACTOR; ++i) {  \
+			struct bucket bkt = hm->buckets[i]; \
 			if (!bkt.filled) continue; \
-			uint64_t index = meta->hf(KVs[bkt.index].key, bkt.key_size) % meta->count; \
-			uint64_t c = 1; \
-			while (buckets[index].filled) \
-			{\
+			uint64_t index = hm->hf(map[bkt.index].key, bkt.size, hm->seed) % hm->count; \
+			uint64_t c = 0; \
+			while (c < hm->count) { \
+				index = (index + c * c) % hm->count; \
+				if (!buckets[index].filled) { \
+					buckets[index].size = bkt.size; \
+					buckets[index].index = bkt.index; \
+					buckets[index].filled = 1; \
+					break; \
+				} \
 				c++; \
-				index = (meta->hf(KVs[bkt.index].key, bkt.key_size) ^ c) % meta->count; \
-			}\
-			buckets[index].key_size = bkt.key_size; \
+			} \
+			buckets[index].size= bkt.size; \
 			buckets[index].index = bkt.index; \
 			buckets[index].filled = 1; \
 		} \
-		KVs = __hashmap_get_meta__(KVs); \
-		KVs = realloc(KVs, sizeof(__hashmap_t) + meta->count * sizeof(typeof(KV))); \
-		meta = (__hashmap_t*)KVs; \
-		meta->buckets = realloc(meta->buckets, sizeof(struct bucket) * meta->count); \
-		memcpy(meta->buckets, buckets, sizeof(struct bucket) * meta->count); \
-		KVs = __hashmap_get_KVs__(KVs); \
+		map = __hashmap_get_meta__(map); \
+		map = realloc(map, sizeof(hashmap_t) + hm->count * sizeof(typeof(KV))); \
+		hm = (hashmap_t*)map; \
+		hm->buckets = realloc(hm->buckets, sizeof(struct bucket) * hm->count); \
+		memcpy(hm->buckets, buckets, sizeof(struct bucket) * hm->count); \
+		map = __hashmap_get_map__(map); \
+	} \
+	uint64_t index = hm->hf(KV.key, sizeof(KV.key), hm->seed) % hm->count; \
+	uint64_t c = 0; \
+	while (c < hm->count) { \
+		index = (index + c * c) % hm->count; \
+		if ( \
+				sizeof(KV.key) == hm->buckets[index].size && \
+				hm->hc(KV.key, map[hm->buckets[index].index].key, sizeof(KV.key)) \
+		) { \
+			map[hm->buckets[index].index] = KV; \
+			break; \
+		} \
+		if (!hm->buckets[index].filled) { \
+			hm->buckets[index].size = sizeof(KV.key); \
+			hm->buckets[index].index = hm->index; \
+			hm->buckets[index].filled = 1; \
+			map[hm->index++] = KV; \
+			break; \
+		} \
+		c++; \
 	} \
 }
 
-#define hm_put(KVs, KV, iKS) { \
-	__hm_realloc__(KVs, KV); \
-	__hashmap_t *meta = __hashmap_get_meta__(KVs); \
-	uint64_t index = meta->hf(KV.key, iKS) % meta->count; \
+#define hm_get(map, KV) { \
+	hashmap_t *hm = __hashmap_get_meta__(map); \
+	uint64_t index = hm->hf(KV->key, sizeof(KV->key), hm->seed) % hm->count; \
 	uint64_t c = 0; \
-	while (c < meta->count) \
+	while (c < hm->count) \
 	{\
-		index = (index + c * c) % meta->count; \
-		if (iKS == meta->buckets[index].key_size && meta->hc(KV.key, KVs[meta->buckets[index].index].key, iKS)) {\
-			KVs[meta->buckets[index].index] = KV; \
-			break; \
-		}\
-		if (!meta->buckets[index].filled) {\
-			meta->buckets[index].key_size = iKS; \
-			meta->buckets[index].index = meta->index; \
-			meta->buckets[index].filled = 1; \
-			KVs[meta->index++] = KV; \
+		index = (index + c * c) % hm->count; \
+		if (sizeof(KV->key) == hm->buckets[index].size && hm->hc(KV->key, map[hm->buckets[index].index].key, sizeof(KV->key))) {\
+			KV->value = map[hm->buckets[index].index].value; \
 			break; \
 		}\
 		c++; \
 	}\
 }
-
-#define hm_get(KVs, KV, iKS) { \
-	__hashmap_t *meta = __hashmap_get_meta__(KVs); \
-	uint64_t index = meta->hf(KV->key, iKS) % meta->count; \
-	uint64_t c = 0; \
-	while (c < meta->count) \
-	{\
-		index = (index + c * c) % meta->count; \
-		if (iKS == meta->buckets[index].key_size && meta->hc(KV->key, KVs[meta->buckets[index].index].key, iKS)) {\
-			KV->value = KVs[meta->buckets[index].index].value; \
-			break; \
-		}\
-		c++; \
-	}\
-}
-
-#define hm_free(KVs) free(__hashmap_get_meta__(KVs))
-#define hm_get_length(KVs) (((__hashmap_t*)__hashmap_get_meta__(KVs))->index)
 
 typedef enum {
 	BLACK 	= 0,
@@ -174,25 +174,30 @@ typedef struct {
 	size_t index;
 } __dynamic_array_t;
 
-typedef uint64_t (*hash_function_t)(void *bytes, size_t size);
-typedef int (*hash_cmp_t)(void *a, void *b, size_t size);
-
+typedef uint64_t (*hash_function_t)(const void *bytes, size_t size, uint32_t seed);
+typedef int (*compare_function_t)(const void *a, const void *b, size_t size);
 typedef struct {
 	hash_function_t hf;
-	hash_cmp_t hc;
+	compare_function_t hc;
 	struct bucket {
-		size_t key_size;
 		size_t index;
+		size_t size;
 		uint8_t filled;
 	} *buckets;
+	uint32_t seed;
+	size_t item_size;
 	size_t count;
+	size_t initial_size;
 	size_t index;
-} __hashmap_t;
+} hashmap_t;
 
 void *__darray_get_meta__(void *array);
 void *__darray_get_array__(void *array);
 void *__hashmap_get_meta__(void *KVs);
-void *__hashmap_get_KVs__(void *KVs);
+void *__hashmap_get_map__(void *KVs);
+size_t hm_get_length(void *KVs);
+void hm_free(void *KVs);
+void *hm_reset(void *KVs);
 
 // build files
 extern const char *build_source;
@@ -256,10 +261,10 @@ time_t get_time_from_file(const char *path);
 void *init_darray(void *array, size_t item_size, size_t inital_size);
 
 // init hashmap
-void *init_hm(void *KVs, size_t KV_size, size_t inital_capacity, hash_function_t hf, hash_cmp_t hc);
+void *init_hm(void *map, size_t initial_size, size_t item_size, hash_function_t hf, compare_function_t hc, uint32_t seed);
 
 // fnv-1a hash function
-uint64_t fnv_1a_hash(void *bytes, size_t size);
+uint64_t fnv_1a_hash(const void *bytes, size_t size, uint32_t seed);
 
 //-----------------------------------------------------------------------------
 // MurmurHash3 was written by Austin Appleby, and is placed in the public
@@ -268,13 +273,13 @@ uint64_t fnv_1a_hash(void *bytes, size_t size);
 // Murmur3_86_128
 //-----------------------------------------------------------------------------
 // MURMUR3_86_128 hash function
-uint64_t MM86128(void *key, size_t len);
+uint64_t MM86128(const void *key, size_t len, uint32_t seed);
 
 // MURMUR3_64
-uint64_t MURMUR3_64(void *key, size_t len);
+uint64_t MURMUR3_64(const void *key, size_t len, uint32_t seed);
 
 // memory compare for two pointers
-int cmp_hash(void *a, void *b, size_t size);
+int cmp_hash(const void *a, const void *b, size_t size);
 
 /**********************************************************************************************
 *																   The Actual Implementation
@@ -650,34 +655,65 @@ void *init_darray(void *array, size_t item_size, size_t inital_size)
 }
 
 // init hashmap
-void *init_hm(void *KVs, size_t KV_size, size_t inital_capacity, hash_function_t hf, hash_cmp_t hc)
+void *init_hm(void *map, size_t initial_size, size_t item_size, hash_function_t hf, compare_function_t hc, uint32_t seed)
 {
-	KVs = malloc(sizeof(__hashmap_t) + inital_capacity * KV_size);
-	((__hashmap_t*)KVs)->buckets = malloc(inital_capacity * sizeof(struct bucket));
-	((__hashmap_t*)KVs)->count = inital_capacity;
-	((__hashmap_t*)KVs)->index = 0;
-	((__hashmap_t*)KVs)->hf = hf;
-	((__hashmap_t*)KVs)->hc = hc;
+	map = malloc(sizeof(hashmap_t) + initial_size * item_size);
+	((hashmap_t*)map)->buckets = malloc(initial_size * sizeof(struct bucket));
+	((hashmap_t*)map)->count = initial_size;
+	((hashmap_t*)map)->index = 0;
+	((hashmap_t*)map)->hf = hf;
+	((hashmap_t*)map)->hc = hc;
+	((hashmap_t*)map)->initial_size = initial_size;
+	((hashmap_t*)map)->seed = seed;
+	((hashmap_t*)map)->item_size = item_size;
+	memset(((hashmap_t*)map)->buckets, 0, sizeof(struct bucket) * initial_size);
+	return __hashmap_get_map__(map);
+}
 
-	return __hashmap_get_KVs__(KVs);
+void *hm_reset(void *KVs)
+{
+	if (KVs != NULL && ((hashmap_t*)__hashmap_get_meta__(KVs))->index) {
+		size_t item_size = sizeof(typeof(KVs[0]));
+		KVs = __hashmap_get_meta__(KVs);
+		hashmap_t __old_data__ = { 
+			.hf = ((hashmap_t*)KVs)->hf,
+			.hc = ((hashmap_t*)KVs)->hc,
+			.initial_size = ((hashmap_t*)KVs)->initial_size,
+			.seed = ((hashmap_t*)KVs)->seed
+		};
+		free(KVs);
+		KVs = init_hm(KVs, item_size, __old_data__.initial_size, __old_data__.hf, __old_data__.hc, __old_data__.seed);
+	}
+	else ERROR("Cannot reset NULL map.");
+}
+
+void hm_free(void *KVs)
+{
+	free(((hashmap_t*)__hashmap_get_meta__(KVs))->buckets);
+	free((hashmap_t*)__hashmap_get_meta__(KVs));
+}
+
+size_t hm_get_length(void *KVs)
+{
+	return ((hashmap_t*)__hashmap_get_meta__(KVs))->index;
 }
 
 // fnv-1a hash function
-uint64_t fnv_1a_hash(void *bytes, size_t size)
+uint64_t fnv_1a_hash(const void *bytes, size_t size, uint32_t seed)
 {
 	uint64_t h = 14695981039346656037ULL; // FNV-1a hash
 	for (size_t i = 0; i < size; ++i) {
-		h ^= ((unsigned char*)bytes)[i];
+		h ^= ((unsigned char*)bytes)[i] + seed;
 		h *= 1099511628211ULL; // FNV prime
 	}
 	return h;
 }
 
-uint64_t MURMUR3_64(void *key, size_t len)
+uint64_t MURMUR3_64(const void *key, size_t len, uint32_t seed)
 {
     const uint8_t *data = (const uint8_t *)key;
     const int nblocks = len / 8;
-    uint64_t h1 = 0xcbf29ce484222325;
+    uint64_t h1 = seed;
     const uint64_t c1 = 0x87c37b91114253d5;
     const uint64_t c2 = 0x4cf5ad432745937f;
 
@@ -724,11 +760,10 @@ uint64_t MURMUR3_64(void *key, size_t len)
     return h1;
 }
 
-uint64_t MM86128(void *key, size_t len)
+uint64_t MM86128(const void *key, size_t len, uint32_t seed)
 {
 #define	ROTL32(x, r) ((x << r) | (x >> (32 - r)))
 #define FMIX32(h) h^=h>>16; h*=0x85ebca6b; h^=h>>13; h*=0xc2b2ae35; h^=h>>16;
-		const uint32_t seed = 0x811c9dc5;
     const uint8_t * data = (const uint8_t*)key;
     const int nblocks = len / 16;
     uint32_t h1 = seed;
@@ -794,7 +829,7 @@ uint64_t MM86128(void *key, size_t len)
 }
 
 // memory compare for two pointers
-int cmp_hash(void *a, void *b, size_t size)
+int cmp_hash(const void *a, const void *b, size_t size)
 {
 	return memcmp(a, b, size) == 0;
 }
@@ -811,12 +846,12 @@ void *__darray_get_array__(void *array)
 
 void *__hashmap_get_meta__(void *KVs)
 {
-	return KVs - (offsetof(__hashmap_t, index) + sizeof(((__hashmap_t*)0)->index));
+	return KVs - (offsetof(hashmap_t, index) + sizeof(((hashmap_t*)0)->index));
 }
 
-void *__hashmap_get_KVs__(void *KVs)
+void *__hashmap_get_map__(void *KVs)
 {
-	return KVs + (offsetof(__hashmap_t, index) + sizeof(((__hashmap_t*)0)->index));
+	return KVs + (offsetof(hashmap_t, index) + sizeof(((hashmap_t*)0)->index));
 }
 
 #ifdef BUILD_ITSELF

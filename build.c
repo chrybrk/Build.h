@@ -40,7 +40,7 @@ int main(int argc, char **argv)
 	} pair_t;
 
 	pair_t *map = NULL;
-	map = init_hm(map, sizeof(pair_t), HASHMAP_SIZE, MURMUR3_64, cmp_hash);
+	map = init_hm(map, sizeof(pair_t), HASHMAP_SIZE, MM86128, cmp_hash, 32);
 
 	clock_t start, end;
 
@@ -49,7 +49,7 @@ int main(int argc, char **argv)
 	for (int i = 0; i < NUM_OPERATIONS; i++) {
 		pair_t kv = { 0 };
 		snprintf(kv.key, sizeof(kv.key), "key%d", i);
-		hm_put(map, kv, sizeof(kv.key));
+		hm_put(map, kv);
 	}
 	end = clock();
 	log_bench_result(start, end, "ops");
@@ -59,7 +59,7 @@ int main(int argc, char **argv)
 	for (int i = 0; i < NUM_OPERATIONS; i++) {
 		pair_t kv = { 0 };
 		snprintf(kv.key, sizeof(kv.key), "key%d", i);
-		hm_get(map, (&kv), sizeof(kv.key));
+		hm_get(map, (&kv));
 	}
 	end = clock();
 	log_bench_result(start, end, "lookups");
