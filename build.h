@@ -61,8 +61,8 @@
 #define WARN(...) printf("%s[BUILD :: WARN]:%s %s\n", get_term_color(TEXT, YELLOW), get_term_color(RESET, 0), formate_string(__VA_ARGS__))
 #define ERROR(...) printf("%s[BUILD :: ERROR]:%s %s\n", get_term_color(TEXT, RED), get_term_color(RESET, 0), formate_string(__VA_ARGS__))
 
-#define LOAD_FACTOR 0.6
-#define POWER_FACTOR 2
+#define LOAD_FACTOR 0.65
+#define POWER_FACTOR 4
 
 #define darray_push(array, item) { 																																	\
 	__dynamic_array_t *meta = __darray_get_meta__(array); 																					\
