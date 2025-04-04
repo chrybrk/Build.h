@@ -152,7 +152,7 @@
 		}\
 		c++; \
 	}\
-	(long int)(c >= hm->count ? -1 : (long int)hm->buckets[index].index); \
+	(c >= hm->count ? -1 : (long int)hm->buckets[index].index); \
 })
 
 void *__dynamic_array_resize_array__(void *array);

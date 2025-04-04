@@ -30,7 +30,7 @@ int main(int argc, char **argv)
 	for (int i = 0; i <= 10; ++i)
 		darray_push(ints, i * 10);
 
-	for (int i = 0; i < darray_get_length(ints); ++i)
+	for (int i = 0; i < darray_len(ints); ++i)
 		INFO("%d", ints[i]);
 
 	// generic ordered map
@@ -39,59 +39,32 @@ int main(int argc, char **argv)
 		int value;
 	} pair_t;
 
+	pair_t *map = NULL;
+	map = init_hm(map, HASHMAP_SIZE, sizeof(pair_t), MM86128, cmp_hash, 32);
+
+	clock_t start, end;
+
 	INFO("Insertion benchmark");
-	for (size_t i = 0; i < 10; ++i)
-	{
-		pair_t *map = NULL;
-		map = init_hm(map, sizeof(pair_t), HASHMAP_SIZE, MM86128, cmp_hash, 32);
-
-		clock_t start, end;
-
-		// Insertion benchmark
-		start = clock();
-		for (int i = 0; i < NUM_OPERATIONS; i++) {
-			pair_t kv = { 0 };
-			snprintf(kv.key, sizeof(kv.key), "key%d", i);
-			hm_put(map, kv);
-		}
-		end = clock();
-		log_bench_result(start, end, "ops");
-
-		/*
-		// Lookup benchmark
-		start = clock();
-		for (int i = 0; i < NUM_OPERATIONS; i++) {
-			pair_t kv = { 0 };
-			snprintf(kv.key, sizeof(kv.key), "key%d", i);
-			hm_get(map, (&kv));
-		}
-		end = clock();
-		log_bench_result(start, end, "lookups");
-		*/
-
-		hm_free(map);
+	// Insertion benchmark
+	start = clock();
+	for (int i = 0; i < NUM_OPERATIONS; i++) {
+		pair_t kv = { 0 };
+		snprintf(kv.key, sizeof(kv.key), "key%d", i);
+		hm_put(map, kv);
 	}
+	end = clock();
+	log_bench_result(start, end, "ops");
 
 	INFO("Lookup benchmark");
-	for (size_t i = 0; i < 10; ++i)
-	{
-		pair_t *map = NULL;
-		map = init_hm(map, sizeof(pair_t), HASHMAP_SIZE, fnv_1a_hash, cmp_hash, 32);
-
-		clock_t start, end;
-
-		// Lookup benchmark
-		start = clock();
-		for (int i = 0; i < NUM_OPERATIONS; i++) {
-			pair_t kv = { 0 };
-			snprintf(kv.key, sizeof(kv.key), "key%d", i);
-			hm_get(map, (&kv));
-		}
-		end = clock();
-		log_bench_result(start, end, "lookups");
-
-		hm_free(map);
+	// Lookup benchmark
+	start = clock();
+	for (int i = 0; i < NUM_OPERATIONS; i++) {
+		pair_t kv = { 0 };
+		snprintf(kv.key, sizeof(kv.key), "key%d", i);
+		long int i = hm_geti(map, kv);
 	}
+	end = clock();
+	log_bench_result(start, end, "lookups");
 
 	// execute shell commands
 	execute("exit");
