@@ -64,21 +64,13 @@
 #define LOAD_FACTOR 0.65
 #define POWER_FACTOR 4
 
-#define darray_push(array, item) { 																																	\
-	__dynamic_array_t *meta = __darray_get_meta__(array); 																					\
-	if (((float)meta->index / (float)meta->count) >= LOAD_FACTOR) { 																	\
-		meta->count *= POWER_FACTOR; 																																		\
-		array = __darray_get_meta__(array); 																																\
-		array = realloc(array, sizeof(__dynamic_array_t) + meta->count * sizeof(typeof(item))); 		\
-		meta = (__dynamic_array_t*)array; 																													\
-		array = __darray_get_array__(array); 																															\
-	} 																																																\
-	array[meta->index++] = item; 																																			\
-}
-#define darray_free(array) free(__darray_get_meta__(array))
-#define darray_get_length(array) (((__dynamic_array_t*)__darray_get_meta__(array))->index)
+#define SWAP(TYPE, A, B) do {\
+	TYPE T = A; \
+	A = B; \
+	B = T; \
+} while(0)
 
-#define hm_put(map, KV) {\
+#define hm_put(map, KV) do {\
 	hashmap_t *hm = __hashmap_get_meta__(map); \
 	if (((float)hm->index / (float)hm->count) >= LOAD_FACTOR) { \
 		hm->count *= POWER_FACTOR; \
@@ -87,7 +79,7 @@
 		for (size_t i = 0; i < hm->count / POWER_FACTOR; ++i) {  \
 			struct bucket bkt = hm->buckets[i]; \
 			if (!bkt.filled) continue; \
-			uint64_t index = hm->hf(map[bkt.index].key, bkt.size, hm->seed) % hm->count; \
+			uint64_t index = hm->hf(&map[bkt.index].key, bkt.size, hm->seed) % hm->count; \
 			uint64_t c = 0; \
 			while (c < hm->count) { \
 				index = (index + c * c) % hm->count; \
@@ -104,19 +96,20 @@
 			buckets[index].filled = 1; \
 		} \
 		map = __hashmap_get_meta__(map); \
-		map = realloc(map, sizeof(hashmap_t) + hm->count * sizeof(typeof(KV))); \
+		map = realloc(map, sizeof(hashmap_t) + hm->count * hm->item_size); \
 		hm = (hashmap_t*)map; \
 		hm->buckets = realloc(hm->buckets, sizeof(struct bucket) * hm->count); \
 		memcpy(hm->buckets, buckets, sizeof(struct bucket) * hm->count); \
 		map = __hashmap_get_map__(map); \
+		free(buckets); \
 	} \
-	uint64_t index = hm->hf(KV.key, sizeof(KV.key), hm->seed) % hm->count; \
+	uint64_t index = hm->hf(&KV.key, sizeof(KV.key), hm->seed) % hm->count; \
 	uint64_t c = 0; \
 	while (c < hm->count) { \
 		index = (index + c * c) % hm->count; \
 		if ( \
 				sizeof(KV.key) == hm->buckets[index].size && \
-				hm->hc(KV.key, map[hm->buckets[index].index].key, sizeof(KV.key)) \
+				hm->hc(&KV.key, &map[hm->buckets[index].index].key, sizeof(KV.key)) \
 		) { \
 			map[hm->buckets[index].index] = KV; \
 			break; \
@@ -130,21 +123,44 @@
 		} \
 		c++; \
 	} \
-}
+} while(0)
 
 #define hm_get(map, KV) { \
 	hashmap_t *hm = __hashmap_get_meta__(map); \
-	uint64_t index = hm->hf(KV->key, sizeof(KV->key), hm->seed) % hm->count; \
+	uint64_t index = hm->hf(&KV->key, sizeof(KV->key), hm->seed) % hm->count; \
 	uint64_t c = 0; \
 	while (c < hm->count) \
 	{\
 		index = (index + c * c) % hm->count; \
-		if (sizeof(KV->key) == hm->buckets[index].size && hm->hc(KV->key, map[hm->buckets[index].index].key, sizeof(KV->key))) {\
+		if (sizeof(KV->key) == hm->buckets[index].size && hm->hc(&KV->key, &map[hm->buckets[index].index].key, sizeof(KV->key))) {\
 			KV->value = map[hm->buckets[index].index].value; \
 			break; \
 		}\
 		c++; \
 	}\
+}
+
+#define hm_geti(map, KV) ({ \
+	hashmap_t *hm = __hashmap_get_meta__(map); \
+	uint64_t index = hm->hf(&KV.key, sizeof(KV.key), hm->seed) % hm->count; \
+	uint64_t c = 0; \
+	while (c < hm->count) \
+	{\
+		index = (index + c * c) % hm->count; \
+		if (sizeof(KV.key) == hm->buckets[index].size && hm->hc(&KV.key, &map[hm->buckets[index].index].key, sizeof(KV.key))) {\
+			break; \
+		}\
+		c++; \
+	}\
+	(long int)(c >= hm->count ? -1 : (long int)hm->buckets[index].index); \
+})
+
+void *__dynamic_array_resize_array__(void *array);
+
+#define darray_push(array, item) { \
+	array = __dynamic_array_resize_array__(array); \
+	darray_t *meta = __darray_get_meta__(array); \
+	array[meta->index++] = item; \
 }
 
 typedef enum {
@@ -169,11 +185,6 @@ typedef enum {
 	RESET
 } TERM_KIND;
 
-typedef struct {
-	size_t count;
-	size_t index;
-} __dynamic_array_t;
-
 typedef uint64_t (*hash_function_t)(const void *bytes, size_t size, uint32_t seed);
 typedef int (*compare_function_t)(const void *a, const void *b, size_t size);
 typedef struct {
@@ -191,13 +202,22 @@ typedef struct {
 	size_t index;
 } hashmap_t;
 
-void *__darray_get_meta__(void *array);
-void *__darray_get_array__(void *array);
+typedef struct {
+	size_t item_size;
+	size_t count;
+	size_t index;
+} darray_t;
+
 void *__hashmap_get_meta__(void *KVs);
 void *__hashmap_get_map__(void *KVs);
-size_t hm_get_length(void *KVs);
+size_t hm_len(void *KVs);
 void hm_free(void *KVs);
-void *hm_reset(void *KVs);
+void hm_reset(void *KVs);
+void *__darray_get_meta__(void *array);
+void *__darray_get_array__(void *array);
+void darray_reset(void *array);
+size_t darray_len(void *array);
+void darray_free(void *array);
 
 // build files
 extern const char *build_source;
@@ -258,7 +278,7 @@ void write_file(const char *path, const char *buffer);
 time_t get_time_from_file(const char *path);
 
 // init dynamic array
-void *init_darray(void *array, size_t item_size, size_t inital_size);
+void *init_darray(void *array, size_t initial_size, size_t item_size);
 
 // init hashmap
 void *init_hm(void *map, size_t initial_size, size_t item_size, hash_function_t hf, compare_function_t hc, uint32_t seed);
@@ -403,7 +423,7 @@ const char *string_list_to_const_string(const char **string_list, size_t len, un
 const char **string_to_array(const char *string, unsigned char sep)
 {
 	const char **array = NULL;
-	array = init_darray(array, 8, 32);
+	array = init_darray(array, 32, 8);
 
 	size_t pos = 0;
 	for (size_t i = 0; i < strlen(string); ++i)
@@ -435,7 +455,7 @@ bool is_binary_old(const char *bin_path, const char **array)
 	if (binary_timestamp == (time_t)(-1))
 		return true;
 
-	for (size_t i = 0; i < darray_get_length(array); ++i) {
+	for (size_t i = 0; i < darray_len(array); ++i) {
 		time_t source_timestamp = get_time_from_file(array[i]);
 		if (source_timestamp == (time_t)(-1)) {
 			fprintf(
@@ -526,7 +546,7 @@ const char **get_files(const char *from)
 	}
 
 	char **buffer = NULL;
-	buffer = (char**)init_darray(buffer, 8, 32);
+	buffer = (char**)init_darray(buffer, 32, 8);
 
 	struct dirent *data;
 	while ((data = readdir(dir)) != NULL)
@@ -559,9 +579,9 @@ const char **get_files_with_specific_ext(const char *from, const char *ext)
 {
 	const char **files = get_files(from);
 	const char **files_with_excep = NULL;
-	files_with_excep = (const char **)init_darray(files_with_excep, 8, 32);
+	files_with_excep = (const char **)init_darray(files_with_excep, 32, 8);
 
-	for (size_t i = 0; i < darray_get_length(files); ++i)
+	for (size_t i = 0; i < darray_len(files); ++i)
 	{
 		char *file = (char *)files[i];
 		char *substr = sub_string(file, strlen(file) - strlen(ext), strlen(file));
@@ -578,7 +598,7 @@ const char **get_files_with_specific_ext(const char *from, const char *ext)
 const char **string_list_to_array(const char **string_list, size_t len)
 {
 	const char **array = NULL;
-	array = (const char **)init_darray(array, 8, len);
+	array = (const char **)init_darray(array, len, 8);
 
 	for (size_t i = 0; i < len; ++i)
 		darray_push(array, string_list[i]);
@@ -596,7 +616,6 @@ const char *read_file(const char *path)
 	fp = fopen(path, "rb");
 	if ( fp == NULL )
 	{
-		ERROR("Cannot read file from this filepath, `%s`\n", path);
 		return NULL;
 	}
 
@@ -608,6 +627,7 @@ const char *read_file(const char *path)
 			return NULL;
 
 	fread(buffer, sizeof(char), len - 1, fp);
+	buffer[len - 1] = '\0';
 
 	fclose(fp);
 	if (line)
@@ -645,13 +665,53 @@ time_t get_time_from_file(const char *path)
 }
 
 // init dynamic array
-void *init_darray(void *array, size_t item_size, size_t inital_size)
+void *init_darray(void *array, size_t initial_size, size_t item_size)
 {
-	array = malloc(sizeof(__dynamic_array_t) + inital_size * item_size);
-	((__dynamic_array_t*)array)->count = inital_size;
-	((__dynamic_array_t*)array)->index = 0;
+	array = malloc(sizeof(darray_t) + initial_size * item_size);
+	((darray_t*)array)->item_size = item_size;
+	((darray_t*)array)->count = initial_size;
+	((darray_t*)array)->index = 0;
 
 	return __darray_get_array__(array);
+}
+
+void *__darray_get_meta__(void *array)
+{
+	return array - (offsetof(darray_t, index) + sizeof(((darray_t*)0)->index));
+}
+
+void *__darray_get_array__(void *array)
+{
+	return array + (offsetof(darray_t, index) + sizeof(((darray_t*)0)->index));
+}
+
+void darray_reset(void *array)
+{
+	if (array != NULL && ((darray_t*)__darray_get_meta__(array))->index) {
+		array = __darray_get_meta__(array);
+		((darray_t*)array)->index = 0;
+	}
+}
+
+void darray_free(void *array)
+{
+	free((darray_t*)__darray_get_meta__(array));
+}
+
+void *__dynamic_array_resize_array__(void *array)
+{
+	darray_t *da = (darray_t*)__darray_get_meta__(array);
+	if (((float)da->index / (float)da->count) >= LOAD_FACTOR) {
+		da->count *= POWER_FACTOR;
+		da = (darray_t*)realloc(da, sizeof(darray_t) + da->count * da->item_size);
+		return __darray_get_array__(da);
+	}
+	return array;
+}
+
+size_t darray_len(void *array)
+{
+	return ((darray_t*)__darray_get_meta__(array))->index;
 }
 
 // init hashmap
@@ -670,21 +730,13 @@ void *init_hm(void *map, size_t initial_size, size_t item_size, hash_function_t 
 	return __hashmap_get_map__(map);
 }
 
-void *hm_reset(void *KVs)
+void hm_reset(void *KVs)
 {
 	if (KVs != NULL && ((hashmap_t*)__hashmap_get_meta__(KVs))->index) {
-		size_t item_size = sizeof(typeof(KVs[0]));
 		KVs = __hashmap_get_meta__(KVs);
-		hashmap_t __old_data__ = { 
-			.hf = ((hashmap_t*)KVs)->hf,
-			.hc = ((hashmap_t*)KVs)->hc,
-			.initial_size = ((hashmap_t*)KVs)->initial_size,
-			.seed = ((hashmap_t*)KVs)->seed
-		};
-		free(KVs);
-		KVs = init_hm(KVs, item_size, __old_data__.initial_size, __old_data__.hf, __old_data__.hc, __old_data__.seed);
+		((hashmap_t*)KVs)->index = 0;
+		memset(((hashmap_t*)KVs)->buckets, 0, sizeof(struct bucket) * ((hashmap_t*)KVs)->count);
 	}
-	else ERROR("Cannot reset NULL map.");
 }
 
 void hm_free(void *KVs)
@@ -693,7 +745,7 @@ void hm_free(void *KVs)
 	free((hashmap_t*)__hashmap_get_meta__(KVs));
 }
 
-size_t hm_get_length(void *KVs)
+size_t hm_len(void *KVs)
 {
 	return ((hashmap_t*)__hashmap_get_meta__(KVs))->index;
 }
@@ -832,16 +884,6 @@ uint64_t MM86128(const void *key, size_t len, uint32_t seed)
 int cmp_hash(const void *a, const void *b, size_t size)
 {
 	return memcmp(a, b, size) == 0;
-}
-
-void *__darray_get_meta__(void *array)
-{
-	return array - (offsetof(__dynamic_array_t, index) + sizeof(((__dynamic_array_t*)0)->index));
-}
-
-void *__darray_get_array__(void *array)
-{
-	return array + (offsetof(__dynamic_array_t, index) + sizeof(((__dynamic_array_t*)0)->index));
 }
 
 void *__hashmap_get_meta__(void *KVs)
