@@ -49,6 +49,8 @@
 #include <limits.h>
 #include <sys/wait.h>
 #include <time.h>
+#include <assert.h>
+#include <nmmintrin.h>
 
 // called at the end of scope
 #define defer(func) __attribute__((cleanup(func)))
@@ -61,8 +63,8 @@
 #define WARN(...) printf("%s[BUILD :: WARN]:%s %s\n", get_term_color(TEXT, YELLOW), get_term_color(RESET, 0), formate_string(__VA_ARGS__))
 #define ERROR(...) printf("%s[BUILD :: ERROR]:%s %s\n", get_term_color(TEXT, RED), get_term_color(RESET, 0), formate_string(__VA_ARGS__))
 
-#define LOAD_FACTOR 0.65
-#define POWER_FACTOR 4
+#define LOAD_FACTOR 0.875
+#define POWER_FACTOR 2
 
 #define SWAP(TYPE, A, B) do {\
 	TYPE T = A; \
@@ -82,7 +84,7 @@
 			uint64_t index = hm->hf(&map[bkt.index].key, bkt.size, hm->seed) % hm->count; \
 			uint64_t c = 0; \
 			while (c < hm->count) { \
-				index = (index + c * c) % hm->count; \
+				index = (index + c * c) & (hm->count - 1); \
 				if (!buckets[index].filled) { \
 					buckets[index].size = bkt.size; \
 					buckets[index].index = bkt.index; \
@@ -91,9 +93,6 @@
 				} \
 				c++; \
 			} \
-			buckets[index].size= bkt.size; \
-			buckets[index].index = bkt.index; \
-			buckets[index].filled = 1; \
 		} \
 		map = __hashmap_get_meta__(map); \
 		map = realloc(map, sizeof(hashmap_t) + hm->count * hm->item_size); \
@@ -106,7 +105,7 @@
 	uint64_t index = hm->hf(&KV.key, sizeof(KV.key), hm->seed) % hm->count; \
 	uint64_t c = 0; \
 	while (c < hm->count) { \
-		index = (index + c * c) % hm->count; \
+		index = (index + c * c) & (hm->count - 1); \
 		if ( \
 				sizeof(KV.key) == hm->buckets[index].size && \
 				hm->hc(&KV.key, &map[hm->buckets[index].index].key, sizeof(KV.key)) \
@@ -131,8 +130,12 @@
 	uint64_t c = 0; \
 	while (c < hm->count) \
 	{\
-		index = (index + c * c) % hm->count; \
-		if (sizeof(KV->key) == hm->buckets[index].size && hm->hc(&KV->key, &map[hm->buckets[index].index].key, sizeof(KV->key))) {\
+		index = (index + c * c) & (hm->count - 1); \
+		if ( \
+			hm->buckets[index].filled && \
+			sizeof(KV.key) == hm->buckets[index].size && \
+			hm->hc(&KV.key, &map[hm->buckets[index].index].key, sizeof(KV.key)) \
+		) {\
 			KV->value = map[hm->buckets[index].index].value; \
 			break; \
 		}\
@@ -146,8 +149,12 @@
 	uint64_t c = 0; \
 	while (c < hm->count) \
 	{\
-		index = (index + c * c) % hm->count; \
-		if (sizeof(KV.key) == hm->buckets[index].size && hm->hc(&KV.key, &map[hm->buckets[index].index].key, sizeof(KV.key))) {\
+		index = (index + c * c) & (hm->count - 1); \
+		if ( \
+			hm->buckets[index].filled && \
+			sizeof(KV.key) == hm->buckets[index].size && \
+			hm->hc(&KV.key, &map[hm->buckets[index].index].key, sizeof(KV.key)) \
+		) {\
 			break; \
 		}\
 		c++; \
@@ -285,6 +292,9 @@ void *init_hm(void *map, size_t initial_size, size_t item_size, hash_function_t 
 
 // fnv-1a hash function
 uint64_t fnv_1a_hash(const void *bytes, size_t size, uint32_t seed);
+
+// fast sse hash
+uint64_t sse_hash(const void * key, size_t len, uint32_t seed);
 
 //-----------------------------------------------------------------------------
 // MurmurHash3 was written by Austin Appleby, and is placed in the public
@@ -759,6 +769,18 @@ uint64_t fnv_1a_hash(const void *bytes, size_t size, uint32_t seed)
 		h *= 1099511628211ULL; // FNV prime
 	}
 	return h;
+}
+
+uint64_t sse_hash(const void * key, size_t len, uint32_t seed)
+{
+	__m128i h = _mm_set_epi64x(0, 5186); // Set the initial value of h
+	__m128i k = _mm_loadu_si128((__m128i*)key);
+	__m128i h_shifted = _mm_slli_epi64(h, seed);
+	h = _mm_xor_si128(h, _mm_add_epi64(h_shifted, k));
+	uint64_t result;
+	_mm_storeu_si128((__m128i*)&result, h); // Store the result back to a uint64_t
+	
+	return result;
 }
 
 uint64_t MURMUR3_64(const void *key, size_t len, uint32_t seed)

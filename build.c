@@ -1,17 +1,20 @@
 #define IMPLEMENT_BUILD_H
 #define BUILD_ITSELF
 #include "build.h"
+#include <assert.h>
+#include <nmmintrin.h>
 
 const char *build_bin = "build";
 const char *build_source = "build.c";
 
-#define HASHMAP_SIZE 1000000 // Size of the hashmap
-#define NUM_OPERATIONS 500000 // Number of operations to perform
+#define HASHMAP_SIZE 1024 // Size of the hashmap
+#define NUM_OPERATIONS 10000000 // Number of operations to perform
 
-void log_bench_result(clock_t start, clock_t end, const char *name);
+void log_bench_result(clock_t start, clock_t end, const char *name, size_t size);
 
 int main(int argc, char **argv)
 {
+	/*
 	// Logging with info, warn and error
 	INFO("Hello, world!");
 
@@ -33,14 +36,16 @@ int main(int argc, char **argv)
 	for (int i = 0; i < darray_len(ints); ++i)
 		INFO("%d", ints[i]);
 
+	*/
 	// generic ordered map
 	typedef struct {
-		char key[20];
+		size_t key;
 		int value;
 	} pair_t;
 
 	pair_t *map = NULL;
-	map = init_hm(map, HASHMAP_SIZE, sizeof(pair_t), MM86128, cmp_hash, 32);
+	size_t psz = sizeof(pair_t);
+	map = init_hm(map, HASHMAP_SIZE, sizeof(pair_t), sse_hash, cmp_hash, 32);
 
 	clock_t start, end;
 
@@ -49,22 +54,25 @@ int main(int argc, char **argv)
 	start = clock();
 	for (int i = 0; i < NUM_OPERATIONS; i++) {
 		pair_t kv = { 0 };
-		snprintf(kv.key, sizeof(kv.key), "key%d", i);
+		kv.key = i;
+		kv.value = i;
 		hm_put(map, kv);
 	}
 	end = clock();
-	log_bench_result(start, end, "ops");
+	log_bench_result(start, end, "ops", psz);
 
 	INFO("Lookup benchmark");
 	// Lookup benchmark
 	start = clock();
 	for (int i = 0; i < NUM_OPERATIONS; i++) {
 		pair_t kv = { 0 };
-		snprintf(kv.key, sizeof(kv.key), "key%d", i);
-		long int i = hm_geti(map, kv);
+		kv.key = i;
+		long int fi = hm_geti(map, kv);
+		// printf("%d - %d\n", map[fi].value, i);
+		assert(map[fi].value == i);
 	}
 	end = clock();
-	log_bench_result(start, end, "lookups");
+	log_bench_result(start, end, "lookups", psz);
 
 	// execute shell commands
 	execute("exit");
@@ -72,12 +80,11 @@ int main(int argc, char **argv)
 	return 0;
 }
 
-void log_bench_result(clock_t start, clock_t end, const char *name)
+void log_bench_result(clock_t start, clock_t end, const char *name, size_t size)
 {
 	double cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
 	double ops_per_sec = NUM_OPERATIONS / cpu_time_used;
 	double avg_time_per_op = cpu_time_used / NUM_OPERATIONS;
-	double bytes_per_op = (sizeof(char*) * NUM_OPERATIONS + sizeof(int) * NUM_OPERATIONS) / (double)NUM_OPERATIONS;
 
-	INFO("%d %s in %f secs, %.2f ns/op, %.0f op/sec, %.2f bytes/op", NUM_OPERATIONS, name, cpu_time_used, avg_time_per_op * 1e9, ops_per_sec, bytes_per_op);
+	INFO("%d %s in %f secs, %.2f ns/op, %.0f op/sec, %zu bytes/op", NUM_OPERATIONS, name, cpu_time_used, avg_time_per_op * 1e9, ops_per_sec, size);
 }
