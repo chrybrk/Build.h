@@ -14,32 +14,13 @@ void log_bench_result(clock_t start, clock_t end, const char *name, size_t size)
 
 int main(int argc, char **argv)
 {
-	/*
-	// Logging with info, warn and error
-	INFO("Hello, world!");
-
-	// string formating
-	char *string = formate_string("hello from %s", build_bin);
-	INFO("before = %s", string);
-
-	// in-string replacement
-	string = replace_char_in_string(string, ' ', ',');
-	INFO("after replacement = %s", string);
-
-	// generic dynamic array
-	int *ints = NULL;
-	ints = init_darray(ints, sizeof(int), 5);
-
-	for (int i = 0; i <= 10; ++i)
-		darray_push(ints, i * 10);
-
-	for (int i = 0; i < darray_len(ints); ++i)
-		INFO("%d", ints[i]);
-
-	*/
 	// generic ordered map
 	typedef struct {
-		size_t key;
+		uint32_t l, r;
+	} key_t;
+
+	typedef struct {
+		key_t key;
 		int value;
 	} pair_t;
 
@@ -54,7 +35,8 @@ int main(int argc, char **argv)
 	start = clock();
 	for (int i = 0; i < NUM_OPERATIONS; i++) {
 		pair_t kv = { 0 };
-		kv.key = i;
+		kv.key.l = i;
+		kv.key.r = i + 1;
 		kv.value = i;
 		hm_put(map, kv);
 	}
@@ -66,10 +48,24 @@ int main(int argc, char **argv)
 	start = clock();
 	for (int i = 0; i < NUM_OPERATIONS; i++) {
 		pair_t kv = { 0 };
-		kv.key = i;
-		long int fi = hm_geti(map, kv);
+		kv.key.l = i;
+		kv.key.r = i + 1;
+		int64_t fi = hm_geti(map, kv);
 		// printf("%d - %d\n", map[fi].value, i);
+		assert(fi != -1);
 		assert(map[fi].value == i);
+	}
+	end = clock();
+	log_bench_result(start, end, "lookups", psz);
+
+	INFO("False lookup benchmark");
+	start = clock();
+	for (int i = 0; i < 1000000; i++) {
+		pair_t kv = { 0 };
+		kv.key.l = i + 1;
+		kv.key.r = 0;
+		int64_t fi = hm_geti(map, kv);
+		if (fi != -1) printf("index = %ld\n", fi);
 	}
 	end = clock();
 	log_bench_result(start, end, "lookups", psz);

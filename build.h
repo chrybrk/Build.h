@@ -32,6 +32,7 @@
 * SOFTWARE.
 **********************************************************************************************/
 
+#define IMPLEMENT_BUILD_H
 #ifdef IMPLEMENT_BUILD_H
 
 #include <stdio.h>
@@ -75,15 +76,15 @@
 #define hm_put(map, KV) do {\
 	hashmap_t *hm = __hashmap_get_meta__(map); \
 	if (((float)hm->index / (float)hm->count) >= LOAD_FACTOR) { \
+		size_t old_count = hm->count; \
 		hm->count *= POWER_FACTOR; \
 		struct bucket *buckets = malloc(sizeof(struct bucket) * hm->count); \
 		memset(buckets, 0, sizeof(struct bucket) * hm->count); \
-		for (size_t i = 0; i < hm->count / POWER_FACTOR; ++i) {  \
+		for (size_t i = 0; i < old_count; ++i) {  \
 			struct bucket bkt = hm->buckets[i]; \
 			if (!bkt.filled) continue; \
-			uint64_t index = hm->hf(&map[bkt.index].key, bkt.size, hm->seed) % hm->count; \
-			uint64_t c = 0; \
-			while (c < hm->count) { \
+			uint64_t index = hm->hf(&map[bkt.index].key, bkt.size, hm->seed); \
+			for (uint64_t c = 0; ; ++c) { \
 				index = (index + c * c) & (hm->count - 1); \
 				if (!buckets[index].filled) { \
 					buckets[index].size = bkt.size; \
@@ -91,7 +92,6 @@
 					buckets[index].filled = 1; \
 					break; \
 				} \
-				c++; \
 			} \
 		} \
 		map = __hashmap_get_meta__(map); \
@@ -102,9 +102,8 @@
 		map = __hashmap_get_map__(map); \
 		free(buckets); \
 	} \
-	uint64_t index = hm->hf(&KV.key, sizeof(KV.key), hm->seed) % hm->count; \
-	uint64_t c = 0; \
-	while (c < hm->count) { \
+	uint64_t index = hm->hf(&KV.key, sizeof(KV.key), hm->seed); \
+	for (uint64_t c = 0; ; ++c) { \
 		index = (index + c * c) & (hm->count - 1); \
 		if ( \
 				sizeof(KV.key) == hm->buckets[index].size && \
@@ -120,16 +119,13 @@
 			map[hm->index++] = KV; \
 			break; \
 		} \
-		c++; \
 	} \
 } while(0)
 
 #define hm_get(map, KV) { \
 	hashmap_t *hm = __hashmap_get_meta__(map); \
-	uint64_t index = hm->hf(&KV->key, sizeof(KV->key), hm->seed) % hm->count; \
-	uint64_t c = 0; \
-	while (c < hm->count) \
-	{\
+	uint64_t index = hm->hf(&KV->key, sizeof(KV->key), hm->seed); \
+	for (uint64_t c = 0; ; ++c) { \
 		index = (index + c * c) & (hm->count - 1); \
 		if ( \
 			hm->buckets[index].filled && \
@@ -139,27 +135,26 @@
 			KV->value = map[hm->buckets[index].index].value; \
 			break; \
 		}\
-		c++; \
 	}\
 }
 
 #define hm_geti(map, KV) ({ \
 	hashmap_t *hm = __hashmap_get_meta__(map); \
-	uint64_t index = hm->hf(&KV.key, sizeof(KV.key), hm->seed) % hm->count; \
-	uint64_t c = 0; \
-	while (c < hm->count) \
-	{\
+	uint64_t index = hm->hf(&KV.key, sizeof(KV.key), hm->seed); \
+	for (uint64_t c = 0; ; ++c) { \
 		index = (index + c * c) & (hm->count - 1); \
-		if ( \
-			hm->buckets[index].filled && \
-			sizeof(KV.key) == hm->buckets[index].size && \
-			hm->hc(&KV.key, &map[hm->buckets[index].index].key, sizeof(KV.key)) \
-		) {\
+		if (!hm->buckets[index].filled) break; \
+		if (hm->buckets[index].size != sizeof(KV.key)) continue; \
+		if (hm->hc(&KV.key, &map[hm->buckets[index].index].key, sizeof(KV.key))) { \
 			break; \
 		}\
-		c++; \
+		c *= c; \
 	}\
-	(c >= hm->count ? -1 : (long int)hm->buckets[index].index); \
+	(int64_t)(\
+		hm->buckets[index].index < hm->count && \
+		hm->hc(&KV.key, &map[hm->buckets[index].index].key, sizeof(KV.key)) && \
+		hm->buckets[index].filled ? hm->buckets[index].index : -1 \
+	); \
 })
 
 void *__dynamic_array_resize_array__(void *array);
@@ -925,7 +920,7 @@ void build_itself()
 	const char **build_files = string_list_to_array((const char *[]){ build_source, "build.h" }, 2);
 	if (is_binary_old(build_bin, build_files))
 	{
-		execute(formate_string("cc -o %s %s", build_bin, build_source));
+		execute(formate_string("cc -o %s %s -march=native -O3", build_bin, build_source));
 		darray_free(build_files);
 		exit(0);
 	}
