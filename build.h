@@ -79,16 +79,23 @@
   }                               \
 } while(0)
 
-#define filter(in_dptr, out_dptr, fptr) do {                        \
+#define bh_foreach(ptr, closure, body) do { \
+  for (size_t i = 0; i < bh_darray_len(ptr); ++i) { \
+    typeof(*((ptr)->buffer)) closure = (ptr)->buffer[i]; \
+    body; \
+  } \
+} while(0)
+
+#define bh_filter(in_dptr, out_dptr, fptr) do {                        \
   for (size_t i = 0; i < (in_dptr)->index; ++i) {                   \
     typeof(*(out_dptr)->buffer) item = fptr((in_dptr)->buffer[i]);  \
-    if (item) darray_push(out_dptr, item);                          \
+    if (item) bh_darray_push(out_dptr, item);                          \
   }                                                                 \
 } while(0)
 
-#define map(in_dptr, out_dptr, fptr) do {               \
+#define bh_map(in_dptr, out_dptr, fptr) do {               \
   for (size_t i = 0; i < (in_dptr)->index; ++i) {       \
-    darray_push(out_dptr, fptr((in_dptr)->buffer[i]));  \
+    bh_darray_push(out_dptr, fptr((in_dptr)->buffer[i]));  \
   }                                                     \
 } while(0)
 
@@ -128,9 +135,6 @@ typedef enum {
   is_none
 } bh_path_kind_t;
 
-// build files
-extern const char *build_source;
-extern const char *build_bin;
 static bh_arena_t *build_arena;
 
 #ifdef BUILD_IMPLEMENTATION
@@ -477,22 +481,21 @@ bool bh_on_binary_old_execute(const char *bin_path, bh_files_t *files, const cha
   return false;
 }
 
-#ifdef BUILD_ITSELF
-void build_itself() __attribute__((constructor));
-void clean_itself() __attribute__((destructor));
-
-void build_itself()
+void bh_init(int argc, char *argv[])
 {
   bh_arena_t arena = { 0 };
   bh_init_arena(&arena, 1024);
   build_arena = &arena;
 
-  bh_files_t files = { 0 };
-  bh_darray_push(&files, (char *)build_source);
-  bh_darray_push(&files, "build.h");
+  char *bin = argv[0];
+  char *src = bh_string_join(bin, ".c");
 
-  const char *command = bh_fmt("cc -o %s %s -march=native -O3", build_bin, build_source);
-  if (bh_on_binary_old_execute(build_bin, &files, command)) {
+  bh_files_t files = { 0 };
+  bh_darray_push(&files, src);
+
+  const char *command = bh_fmt("cc -o %s %s -march=native -O3", bin, src);
+  if (bh_is_binary_old(bin, &files)) {
+    bh_execute(command);
     bh_darray_free(&files);
     bh_arena_free(&arena);
     build_arena = NULL;
@@ -504,11 +507,5 @@ void build_itself()
   build_arena = NULL;
 }
 
-void clean_itself()
-{
-  bh_arena_free(build_arena);
-}
-
 #endif // BUILD_IMPLEMENTATION
-#endif // BUILD_ITSELF
 #endif //__build_h__

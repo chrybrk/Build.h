@@ -2,44 +2,34 @@
 
 `build.h` is a single-header library that acts as a build system, it works more-or-less like shell-script, with many built-in features:
 
-- `Execute`
-- `INFO`
-- `WARN`
-- `ERROR`
-- `formate_string`
-- `sub-string`
-- `join-string`
-- `replace`
-- `conversion between array and string`
-- `execute shell commands`
-- `check for directory or files, or create one`
-- `read or write to file`
-- `generic dynamic array`
-- `generic ordered hashmap`
-
-
 # Start here
 
+## Example
 ```c 
-#define IMPLEMENT_BUILD_H
-#define BUILD_ITSELF
+#define BUILD_IMPLEMENTATION
 #include "build.h"
 
-const char *build_bin = "build";
-const char *build_source = "build.c";
+extern bh_arena_t *build_arena;
+static bh_arena_t arena = { 0 };
 
-int main(int argc, char **argv)
+int main(int argc, char *argv[])
 {
-	INFO("Hello, world!");
+  bh_init(argc, argv);
 
-	return 0;
+  bh_init_arena(&arena, 1024 * 1024);
+  build_arena = &arena;
+
+  bh_log(1, "Hello, World!\n");
+
+  bh_arena_free(&arena);
+
+  return 0;
 }
 ```
 
-## Build
+## Bootstraping
+
 ```txt
 $ cc -o build build.c
 $ ./build
 ```
-
-After that it will re-build itself, when it will detect changes.
