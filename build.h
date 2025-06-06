@@ -1,5 +1,5 @@
 /**********************************************************************************************
-* build.h (1.0.0) - A simple yet powerful build system written in C.
+* build.h (1.1.0) - A simple yet powerful build system written in C.
 *
 * MIT License
 *
@@ -99,7 +99,9 @@
   }                                                     \
 } while(0)
 
+bh_define_darray(pid_t) bh_async_t;
 bh_define_darray(char *) bh_files_t;
+typedef bh_files_t bh_strings_t;
 
 typedef enum {
 	BLACK 	= 0,
@@ -137,8 +139,6 @@ typedef enum {
 
 static bh_arena_t *build_arena;
 
-#ifdef BUILD_IMPLEMENTATION
-
 // string formating
 #define bh_fmt(...) ({ bh_fmt_fn(__VA_ARGS__, NULL); })
 
@@ -168,9 +168,15 @@ char *bh_string_join(const char *f, const char *s);
 char *bh_string_chop(const char *s, size_t from, size_t to);
 char *bh_string_replace_char(char *s, const unsigned char from, const unsigned char to);
 
+bool bh_string_to_array(bh_strings_t *strings, const char *string, const unsigned char seperator);
+
 bool bh_execute(const char *command);
 bool bh_is_binary_old(const char *bin_path, bh_files_t *files);
 bool bh_on_binary_old_execute(const char *bin_path, bh_files_t *files, const char *command);
+bool bh_push_async(bh_async_t *async, const char *command);
+bool bh_execute_async(bh_async_t *async);
+
+#ifdef BUILD_IMPLEMENTATION
 
 char *bh_fmt_fn(char *s, ...)
 {
@@ -442,6 +448,25 @@ char *bh_string_replace_char(char *s, const unsigned char from, const unsigned c
 	return s;
 }
 
+bool bh_string_to_array(bh_strings_t *strings, const char *string, const unsigned char seperator)
+{
+  if (!string) return false;
+
+  size_t index = 0;
+  for (size_t i = 0; i < strlen(string); ++i) {
+    if (string[i] == seperator) {
+      char *sub = bh_string_chop(string, index, i);
+      bh_darray_push(strings, sub);
+      index = i + 1;
+    }
+  }
+
+  char *sub = bh_string_chop(string, index, strlen(string));
+  bh_darray_push(strings, sub);
+
+  return true;
+}
+
 bool bh_execute(const char *command)
 {
 	if (command == NULL) return false;
@@ -479,6 +504,37 @@ bool bh_on_binary_old_execute(const char *bin_path, bh_files_t *files, const cha
     return bh_execute(command);
 
   return false;
+}
+
+bool bh_push_async(bh_async_t *async, const char *command)
+{
+  pid_t pid = fork();
+
+  if (pid < 0) return false;
+  else if (pid == 0) {
+    execlp("sh", "sh", "-c", command, NULL);
+    perror("execvp failed");
+
+    return false;
+  }
+
+  bh_darray_push(async, pid);
+
+  return true;
+}
+
+bool bh_execute_async(bh_async_t *async)
+{
+  bool ret = true;
+  bh_foreach(async, pid, {
+    int status;
+    waitpid(pid, &status, 0);
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != EXIT_SUCCESS)
+      ret = true;
+  });
+
+  return ret;
 }
 
 void bh_init(int argc, char *argv[])
