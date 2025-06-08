@@ -66,6 +66,13 @@
   (ptr)->buffer[(ptr)->index++] = item;                                 \
 } while(0)
 
+// push multiple items to dynamic array
+#define bh_darray_push_mul(ptr, items, count) do {  \
+  for (size_t i = 0; i < count; ++i) {              \
+    bh_darray_push(ptr, items[i]);                  \
+  }                                                 \
+} while(0)
+
 // len of dynamic array
 #define bh_darray_len(ptr) (ptr)->index
 
