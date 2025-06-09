@@ -1,2 +1,5 @@
 .ccls-cache
+.bh_cache
 build
+./build
+/build

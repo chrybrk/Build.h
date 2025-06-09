@@ -63,18 +63,18 @@ int main(int argc, char *argv[])
   for (size_t i = 0; i < bh_darray_len(&striped_source); ++i) {
     char *command =
       bh_fmt(
-        "gcc -o bin/%s.o -c %s %s %s %s",
+        "gcc -o bin/%s.o -c %s %s %s",
         striped_source.buffer[i],
         raylib_source.buffer[i],
         bh_files_to_string(&CFLAGS, ' '),
-        bh_files_to_string(&INCLUDES, ' '),
-        bh_files_to_string(&LDFLAGS, ' ')
+        bh_files_to_string(&INCLUDES, ' ')
       );
 
+    // bh_execute(command);
     bh_push_async(&async, command);
   }
 
-  bh_execute_async(&async);
+  assert(bh_execute_async(&async));
 
   bh_arena_free(&arena);
 

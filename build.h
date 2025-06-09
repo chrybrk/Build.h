@@ -1,5 +1,5 @@
 /**********************************************************************************************
-* build.h (1.1.0) - A simple yet powerful build system written in C.
+* build.h (1.2.0) - A simple yet powerful build system written in C.
 *
 * MIT License
 *
@@ -106,7 +106,12 @@
   }                                                     \
 } while(0)
 
-bh_define_darray(pid_t) bh_async_t;
+typedef struct {
+  pid_t pid;
+  char *command;
+} bh_command_t;
+
+bh_define_darray(bh_command_t) bh_async_t;
 bh_define_darray(char *) bh_files_t;
 typedef bh_files_t bh_strings_t;
 
@@ -167,6 +172,7 @@ bh_path_kind_t bh_path_exist(const char *path);
 
 char *bh_files_to_string(bh_files_t *files, const unsigned char seperator);
 bool bh_files_get(const char *path, bh_files_t *files);
+bool bh_recursive_files_get(const char *path, bh_files_t *files);
 char *bh_file_read(const char *path);
 bool bh_file_write(const char *path, const char *buffer);
 time_t bh_file_get_time(const char *path);
@@ -364,6 +370,55 @@ bool bh_files_get(const char *path, bh_files_t *files)
   return true;
 }
 
+bool bh_recursive_files_get(const char *path, bh_files_t *files)
+{
+  bh_path_kind_t kind = bh_path_exist(path);
+  if (kind == is_none || kind == is_file) {
+    bh_log(3, "expected directory path.\n");
+    return false;
+  }
+
+	bool hash_slash = false;
+	char slash = bh_string_chop(path, strlen(path) - 1, strlen(path))[0];
+
+	if (slash == '/' || slash == '\\')
+		hash_slash = true;
+
+	DIR *dir = opendir(path);
+	if (dir == NULL) {
+    bh_log(3, bh_fmt("failed to open directory, `%s`.\n", path));
+    return false;
+  }
+
+	struct dirent *data;
+	while ((data = readdir(dir)) != NULL)
+	{
+    if (data->d_type == DT_DIR) {
+      if (strncmp(data->d_name, ".", 1) && strncmp(data->d_name, "..", 2)) {
+        const char *npath = (hash_slash) ? bh_fmt("%s%s", path, data->d_name) :
+          bh_fmt("%s/%s", path, data->d_name);
+        if (!bh_rfiles_get(npath, files))
+          return false;
+      }
+    }
+    else {
+      char *fileName = data->d_name;
+      char *item = NULL;
+      if (hash_slash) {
+        item = bh_fmt((char *)"%s%s", path, fileName);
+      }
+      else {
+        item = bh_fmt((char *)"%s/%s", path, fileName);
+      }
+
+      bh_darray_push(files, item);
+    }
+	}
+
+  return true;
+
+}
+
 char *bh_file_read(const char *path)
 {
 	FILE *fp;
@@ -520,12 +575,15 @@ bool bh_push_async(bh_async_t *async, const char *command)
   if (pid < 0) return false;
   else if (pid == 0) {
     execlp("sh", "sh", "-c", command, NULL);
-    perror("execvp failed");
+    bh_log(3, "Async failed");
 
     return false;
   }
 
-  bh_darray_push(async, pid);
+  bh_darray_push(async, ((bh_command_t){
+    .pid = pid,
+    .command = (char*)command
+  }));
 
   return true;
 }
@@ -533,9 +591,10 @@ bool bh_push_async(bh_async_t *async, const char *command)
 bool bh_execute_async(bh_async_t *async)
 {
   bool ret = true;
-  bh_foreach(async, pid, {
+  bh_foreach(async, command, {
+    bh_log(1, bh_fmt("%s\n", command.command));
     int status;
-    waitpid(pid, &status, 0);
+    waitpid(command.pid, &status, 0);
 
     if (!WIFEXITED(status) || WEXITSTATUS(status) != EXIT_SUCCESS)
       ret = true;
