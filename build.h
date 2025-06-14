@@ -1,5 +1,5 @@
 /**********************************************************************************************
-* build.h (1.2.0) - A simple yet powerful build system written in C.
+* build.h (1.3.1) - A simple yet powerful build system written in C.
 *
 * MIT License
 *
@@ -66,6 +66,10 @@
   (ptr)->buffer[(ptr)->index++] = item;                                 \
 } while(0)
 
+#define bh_darray_pop(ptr) ((ptr)->index > 0 ? (ptr)->index-- : 0)
+
+#define bh_darray_get(ptr, index) ((ptr)->buffer[index])
+
 // push multiple items to dynamic array
 #define bh_darray_push_mul(ptr, items, count) do {  \
   for (size_t i = 0; i < count; ++i) {              \
@@ -86,6 +90,18 @@
   }                               \
 } while(0)
 
+#define bh_async(async_ptr, expr) ({                \
+  bool result = true;                               \
+  pid_t pid = fork();                               \
+  if (pid < 0) result = false;                      \
+  else if (pid == 0) { exit(expr); }                \
+  bh_darray_push(async_ptr, ((bh_command_t) {       \
+    .pid = pid,                                     \
+    .command = NULL                                 \
+  }));                                              \
+  (result);                                         \
+})
+
 #define bh_foreach(ptr, closure, body) do { \
   for (size_t i = 0; i < bh_darray_len(ptr); ++i) { \
     typeof(*((ptr)->buffer)) closure = (ptr)->buffer[i]; \
@@ -105,6 +121,18 @@
     bh_darray_push(out_dptr, fptr((in_dptr)->buffer[i]));  \
   }                                                     \
 } while(0)
+
+#define bh_throw(k) { bh_current_err_state = k; break; }
+#define bh_uthrow(ptr, k) if (!ptr) bh_throw(k)
+#define bh_try do { bh_current_err_state = bh_NoError;
+#define bh_catch(k) } while(0); if (bh_current_err_state == k)
+
+typedef enum {
+  bh_NoError = 0,
+  bh_FileNotFoundError,
+} bh_error_type_t;
+
+static int bh_current_err_state = bh_NoError;
 
 typedef struct {
   pid_t pid;
@@ -174,7 +202,7 @@ char *bh_files_to_string(bh_files_t *files, const unsigned char seperator);
 bool bh_files_get(const char *path, bh_files_t *files);
 bool bh_recursive_files_get(const char *path, bh_files_t *files);
 char *bh_file_read(const char *path);
-bool bh_file_write(const char *path, const char *buffer);
+bool bh_file_write(const char *path, const char *buffer, size_t size);
 time_t bh_file_get_time(const char *path);
 
 char *bh_string_join(const char *f, const char *s);
@@ -187,7 +215,7 @@ bool bh_execute(const char *command);
 bool bh_is_binary_old(const char *bin_path, bh_files_t *files);
 bool bh_on_binary_old_execute(const char *bin_path, bh_files_t *files, const char *command);
 bool bh_push_async(bh_async_t *async, const char *command);
-bool bh_execute_async(bh_async_t *async);
+bool bh_await(bh_async_t *async);
 
 #ifdef BUILD_IMPLEMENTATION
 
@@ -397,7 +425,7 @@ bool bh_recursive_files_get(const char *path, bh_files_t *files)
       if (strncmp(data->d_name, ".", 1) && strncmp(data->d_name, "..", 2)) {
         const char *npath = (hash_slash) ? bh_fmt("%s%s", path, data->d_name) :
           bh_fmt("%s/%s", path, data->d_name);
-        if (!bh_rfiles_get(npath, files))
+        if (!bh_recursive_files_get(npath, files))
           return false;
       }
     }
@@ -448,19 +476,35 @@ char *bh_file_read(const char *path)
 	return buffer;
 }
 
-bool bh_file_write(const char *path, const char *buffer)
+bool bh_file_write(const char *path, const char *buffer, size_t size)
 {
 	FILE *fp;
-	long len;
 
-	fp = fopen(path, "wb");
-	if (fp == NULL) {
+  bh_try {
+    fp = fopen(path, "wb");
+    bh_uthrow(fp, bh_FileNotFoundError);
+  } bh_catch(bh_FileNotFoundError) {
     bh_log(3, bh_fmt("failed to open files, `%s`.\n", path));
 		return false;
-	}
+  }
 
-	fwrite(buffer, sizeof(char), len - 1, fp);
-	fclose(fp);
+	size_t total_size_written = fwrite(buffer, sizeof(char), size, fp);
+  if (total_size_written != size) {
+    bh_log(3, bh_fmt("Failed to write complete file `%s`.\n", path));
+    fclose(fp);
+    return false;
+  }
+
+  if (fflush(fp) != 0) {
+    bh_log(3, bh_fmt("failed to flush data to file `%s`.\n", path));
+    fclose(fp);
+    return false;
+  }
+
+  if (fclose(fp) != 0) {
+    bh_log(3, bh_fmt("failed to properly close file `%s`.\n", path));
+    return false;
+  }
 
 	return true;
 }
@@ -532,7 +576,9 @@ bool bh_string_to_array(bh_strings_t *strings, const char *string, const unsigne
 bool bh_execute(const char *command)
 {
 	if (command == NULL) return false;
+#ifdef BUILD_EXECUTE_LOG
 	bh_log(1, bh_fmt("$ %s\n", command));
+#endif
 	return !system(command);
 }
 
@@ -588,11 +634,13 @@ bool bh_push_async(bh_async_t *async, const char *command)
   return true;
 }
 
-bool bh_execute_async(bh_async_t *async)
+bool bh_await(bh_async_t *async)
 {
-  bool ret = true;
+  bool ret = false;
   bh_foreach(async, command, {
-    bh_log(1, bh_fmt("%s\n", command.command));
+    if (command.command)
+      bh_log(1, bh_fmt("%s\n", command.command));
+
     int status;
     waitpid(command.pid, &status, 0);
 
