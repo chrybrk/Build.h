@@ -1,3 +1,28 @@
+/********************************************
+                 Example Code
+*********************************************
+
+#define BUILD_IMPLEMENTATION
+#define BUILD_EXECUTE_LOG
+#include "build.h"
+
+extern bh_arena_t *build_arena;
+static bh_arena_t arena = { 0 };
+
+int main(int argc, char *argv[])
+{
+  bh_init(argc, argv);
+
+  bh_init_arena(&arena, 1024 * 1024);
+  build_arena = &arena;
+
+  bh_arena_free(&arena);
+
+  return 0;
+}
+********************************************/
+
+
 /**********************************************************************************************
 * build.h (1.3.1) - A simple yet powerful build system written in C.
 *
@@ -27,6 +52,11 @@
 #ifndef __build_h__
 #define __build_h__
 
+#include <errno.h>
+#include <fileapi.h>
+#include <handleapi.h>
+#include <minwindef.h>
+#include <processthreadsapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -35,40 +65,46 @@
 #include <dirent.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <synchapi.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <limits.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <assert.h>
+
+#if __UNIX__
+#include <sys/wait.h>
+#elif __WIN32__
+#include <windows.h>
+#endif
 
 // typedef dynamic array with generic type
 #define bh_define_darray(type)  \
   typedef struct {    \
     size_t size;      \
-    size_t index;     \
-    type *buffer;     \
+    size_t count;     \
+    type *items;     \
   } 
 
 // push item to dynamic array
 #define bh_darray_push(ptr, item) do {                                  \
-  if ((ptr)->index >= (ptr)->size) {                                    \
-    size_t item_size = sizeof(typeof((*(ptr)->buffer)));                \
+  if ((ptr)->count >= (ptr)->size) {                                    \
+    size_t item_size = sizeof(typeof((*(ptr)->items)));                \
     (ptr)->size += 8;                                                   \
-    if ((ptr)->buffer) {                                                \
-      (ptr)->buffer = realloc((ptr)->buffer, (ptr)->size * item_size);  \
+    if ((ptr)->items) {                                                \
+      (ptr)->items = realloc((ptr)->items, (ptr)->size * item_size);  \
     } else {                                                            \
-      (ptr)->buffer = malloc((ptr)->size * item_size);                  \
+      (ptr)->items = malloc((ptr)->size * item_size);                  \
     }                                                                   \
   }                                                                     \
-  (ptr)->buffer[(ptr)->index++] = item;                                 \
+  (ptr)->items[(ptr)->count++] = item;                                 \
 } while(0)
 
-#define bh_darray_pop(ptr) ((ptr)->index > 0 ? (ptr)->index-- : 0)
+#define bh_darray_pop(ptr) ((ptr)->count > 0 ? (ptr)->count-- : 0)
 
-#define bh_darray_get(ptr, index) ((ptr)->buffer[index])
+#define bh_darray_get(ptr, index) ((ptr)->items[index])
 
 // push multiple items to dynamic array
 #define bh_darray_push_mul(ptr, items, count) do {  \
@@ -78,18 +114,31 @@
 } while(0)
 
 // len of dynamic array
-#define bh_darray_len(ptr) (ptr)->index
+#define bh_darray_len(ptr) (ptr)->count
+
+#define bh_darray_drop(in_dptr, out_dptr, n) do {   \
+  for (size_t i = n; i < (in_dptr)->count; ++i) {   \
+    bh_darray_push(out_dptr, (in_dptr)->items[i]); \
+  }                                                 \
+} while(0)
+
+#define bh_darray_take(in_dptr, out_dptr, n) do {                               \
+  for (size_t i = 0; i < (n < (in_dptr)->count ? n : (in_dptr)->count); ++i) {  \
+    bh_darray_push(out_dptr, (in_dptr)->items[i]);                             \
+  }                                                                             \
+} while(0)
 
 // reset dynamic array
-#define bh_darray_reset(ptr) (ptr)->index = 0
+#define bh_darray_reset(ptr) (ptr)->count = 0
 
 // free allocated memory in dynamic array
 #define bh_darray_free(ptr) do {  \
-  if ((ptr)->buffer) {            \
-    free((ptr)->buffer);          \
+  if ((ptr)->items) {            \
+    free((ptr)->items);          \
   }                               \
 } while(0)
 
+#if __UNIX__
 #define bh_async(async_ptr, expr) ({                \
   bool result = true;                               \
   pid_t pid = fork();                               \
@@ -101,24 +150,43 @@
   }));                                              \
   (result);                                         \
 })
+#elif __WIN32__
+#define bh_async(async_ptr, expr) ({                \
+  bool result = true;                               \
+  STARTUPINFO si = { sizeof(si) };                  \
+  PROCESS_INFORMATION pi;                           \
+  char cmdline[] = "cmd /c exit " #expr;            \
+                                                    \
+  if (!CreateProcess(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) { \
+    result = false;                                 \
+  } else {                                          \
+    CloseHandle(pi.hThread);                        \
+    bh_darray_push(async_ptr, ((bh_command_t) {     \
+      .pid = pi.hProcess,                           \
+      .command = NULL                               \
+    }));                                            \
+  }                                                 \
+  (result);                                         \
+})
+#endif
 
 #define bh_foreach(ptr, closure, body) do { \
   for (size_t i = 0; i < bh_darray_len(ptr); ++i) { \
-    typeof(*((ptr)->buffer)) closure = (ptr)->buffer[i]; \
+    typeof(*((ptr)->items)) closure = (ptr)->items[i]; \
     body; \
   } \
 } while(0)
 
 #define bh_filter(in_dptr, out_dptr, fptr) do {                        \
-  for (size_t i = 0; i < (in_dptr)->index; ++i) {                   \
-    typeof(*(out_dptr)->buffer) item = fptr((in_dptr)->buffer[i]);  \
+  for (size_t i = 0; i < (in_dptr)->count; ++i) {                   \
+    typeof(*(out_dptr)->items) item = fptr((in_dptr)->items[i]);  \
     if (item) bh_darray_push(out_dptr, item);                          \
   }                                                                 \
 } while(0)
 
 #define bh_map(in_dptr, out_dptr, fptr) do {               \
-  for (size_t i = 0; i < (in_dptr)->index; ++i) {       \
-    bh_darray_push(out_dptr, fptr((in_dptr)->buffer[i]));  \
+  for (size_t i = 0; i < (in_dptr)->count; ++i) {       \
+    bh_darray_push(out_dptr, fptr((in_dptr)->items[i]));  \
   }                                                     \
 } while(0)
 
@@ -135,7 +203,11 @@ typedef enum {
 static int bh_current_err_state = bh_NoError;
 
 typedef struct {
+#if __UNIX__
   pid_t pid;
+#elif __WIN32__
+  HANDLE pid;
+#endif
   char *command;
 } bh_command_t;
 
@@ -197,6 +269,7 @@ void *bh_arena_alloc(bh_arena_t *arena, size_t size);
 
 bool bh_mkdir(const char *path);
 bh_path_kind_t bh_path_exist(const char *path);
+bool bh_dir_get(const char *path, bh_files_t *dirs);
 
 char *bh_files_to_string(bh_files_t *files, const unsigned char seperator);
 bool bh_files_get(const char *path, bh_files_t *files);
@@ -207,7 +280,7 @@ time_t bh_file_get_time(const char *path);
 
 char *bh_string_join(const char *f, const char *s);
 char *bh_string_chop(const char *s, size_t from, size_t to);
-char *bh_string_replace_char(char *s, const unsigned char from, const unsigned char to);
+char *bh_string_replace_char(char *s, char from, char to);
 
 bool bh_string_to_array(bh_strings_t *strings, const char *string, const unsigned char seperator);
 
@@ -216,6 +289,13 @@ bool bh_is_binary_old(const char *bin_path, bh_files_t *files);
 bool bh_on_binary_old_execute(const char *bin_path, bh_files_t *files, const char *command);
 bool bh_push_async(bh_async_t *async, const char *command);
 bool bh_await(bh_async_t *async);
+
+// C specific stuff
+bool bh_c_source_get_include_paths(
+  bh_files_t *include_paths,
+  const char *source,
+  const char *args,
+  const char *out_filename);
 
 #ifdef BUILD_IMPLEMENTATION
 
@@ -323,8 +403,10 @@ bool bh_mkdir(const char *path)
 
 bh_path_kind_t bh_path_exist(const char *path)
 {
-  struct stat bf;
   bh_path_kind_t kind = is_none;
+
+#if __UNIX__
+  struct stat bf;
 
   if (stat(path, &bf)) {
     return kind;
@@ -333,26 +415,98 @@ bh_path_kind_t bh_path_exist(const char *path)
   if (S_ISREG(bf.st_mode)) kind = is_file;
   else if (S_ISDIR(bf.st_mode)) kind = is_dir;
 
+#elif __WIN32__
+  DWORD attrib = GetFileAttributes(path);
+  if (attrib == INVALID_FILE_ATTRIBUTES)
+    return kind;
+
+  if (attrib & FILE_ATTRIBUTE_DIRECTORY)
+    kind = is_dir;
+  else
+    kind = is_file;
+
+#endif
+
   return kind;
+}
+
+bool bh_dir_get(const char *path, bh_files_t *dirs)
+{
+  bh_path_kind_t kind = bh_path_exist(path);
+  if (kind == is_none || kind == is_file) {
+    bh_log(3, "expected directory path.\n");
+    return false;
+  }
+
+  bool has_slash = false;
+  char slash = bh_string_chop(path, strlen(path) - 1, strlen(path))[0];
+
+  if (slash == '/' || slash == '\\')
+    has_slash = true;
+  else
+#if __UNIX__
+    slash = '/';
+#elif __WIN32__
+    slash = '\\';
+#endif
+
+  DIR *dir = opendir(path);
+  if (dir == NULL) {
+    bh_log(3, bh_fmt("failed to open directory, `%s`.\n", path));
+    return false;
+  }
+
+  struct dirent *data;
+  while ((data = readdir(dir)) != NULL)
+  {
+    char *next_path = bh_fmt("%s%c%s", path, slash, data->d_name);
+
+#if __UNIX__
+    if (data->d_type == DT_DIR)
+    {
+      bh_darray_push(dirs, next_path);
+    }
+#elif __WIN32__
+    if ((strcmp(data->d_name, "..") && strcmp(data->d_name, ".")) &&
+      bh_path_exist(next_path) == is_dir)
+    {
+      bh_darray_push(dirs, next_path);
+    }
+#endif
+  }
+
+  return true;
 }
 
 char *bh_files_to_string(bh_files_t *files, const unsigned char seperator)
 {
-	size_t total_size_of_string = 0;
+	size_t total_size_of_string = 1;
 
 	for (size_t i = 0; i < bh_darray_len(files); ++i)
-		total_size_of_string += strlen(files->buffer[i]) + 1;
+  {
+		total_size_of_string += strlen(files->items[i]);
+    if (i != bh_darray_len(files) - 1 && seperator) {
+      total_size_of_string++;
+    }
+  }
 
-	char *string = (char *)bh_arena_alloc(build_arena, total_size_of_string + 1);
+	char *string = (char *)malloc(total_size_of_string);
+  if (!string) return NULL;
+
 	size_t pos = 0;
 	for (size_t i = 0; i < bh_darray_len(files); ++i)
 	{
-		string = strcat(string, files->buffer[i]);
-		pos += strlen(files->buffer[i]) + 1;
-		string[pos - 1] = seperator;
+    size_t len = strlen(files->items[i]);
+    strncpy(string + pos, files->items[i], len);
+    pos += len;
+
+    if (i != bh_darray_len(files) - 1 && seperator) {
+      string[pos] = seperator;
+      pos++;
+    }
 	}
 
-	string[total_size_of_string] = '\0';
+	string[pos] = '\0';
 
 	return string;
 }
@@ -365,11 +519,11 @@ bool bh_files_get(const char *path, bh_files_t *files)
     return false;
   }
 
-	bool hash_slash = false;
+	bool has_slash = false;
 	char slash = bh_string_chop(path, strlen(path) - 1, strlen(path))[0];
 
 	if (slash == '/' || slash == '\\')
-		hash_slash = true;
+		has_slash = true;
 
 	DIR *dir = opendir(path);
 	if (dir == NULL) {
@@ -380,11 +534,13 @@ bool bh_files_get(const char *path, bh_files_t *files)
 	struct dirent *data;
 	while ((data = readdir(dir)) != NULL)
 	{
+
+#if __UNIX__
 		if (data->d_type != DT_DIR)
 		{
 			char *fileName = data->d_name;
 			char *item = NULL;
-			if (hash_slash) {
+			if (has_slash) {
         item = bh_fmt((char *)"%s%s", path, fileName);
       }
 			else {
@@ -393,6 +549,21 @@ bool bh_files_get(const char *path, bh_files_t *files)
 
       bh_darray_push(files, item);
 		}
+#elif __WIN32__
+		if (data->d_ino != ENOTDIR && (strcmp(data->d_name, ".") && strcmp(data->d_name, "..")))
+		{
+			char *fileName = data->d_name;
+			char *item = NULL;
+			if (has_slash) {
+        item = bh_fmt((char *)"%s%s", path, fileName);
+      }
+			else {
+        item = bh_fmt((char *)"%s/%s", path, fileName);
+      }
+
+      bh_darray_push(files, item);
+		}
+#endif
 	}
 
   return true;
@@ -406,11 +577,11 @@ bool bh_recursive_files_get(const char *path, bh_files_t *files)
     return false;
   }
 
-	bool hash_slash = false;
+	bool has_slash = false;
 	char slash = bh_string_chop(path, strlen(path) - 1, strlen(path))[0];
 
 	if (slash == '/' || slash == '\\')
-		hash_slash = true;
+		has_slash = true;
 
 	DIR *dir = opendir(path);
 	if (dir == NULL) {
@@ -421,18 +592,30 @@ bool bh_recursive_files_get(const char *path, bh_files_t *files)
 	struct dirent *data;
 	while ((data = readdir(dir)) != NULL)
 	{
+
+#if __UNIX__
     if (data->d_type == DT_DIR) {
       if (strncmp(data->d_name, ".", 1) && strncmp(data->d_name, "..", 2)) {
-        const char *npath = (hash_slash) ? bh_fmt("%s%s", path, data->d_name) :
+        const char *npath = (has_slash) ? bh_fmt("%s%s", path, data->d_name) :
           bh_fmt("%s/%s", path, data->d_name);
         if (!bh_recursive_files_get(npath, files))
           return false;
       }
     }
+#elif __WIN32__
+    if (data->d_ino == EISDIR) {
+      if (strncmp(data->d_name, ".", 1) && strncmp(data->d_name, "..", 2)) {
+        const char *npath = (has_slash) ? bh_fmt("%s%s", path, data->d_name) :
+          bh_fmt("%s/%s", path, data->d_name);
+        if (!bh_recursive_files_get(npath, files))
+          return false;
+      }
+    }
+#endif
     else {
       char *fileName = data->d_name;
       char *item = NULL;
-      if (hash_slash) {
+      if (has_slash) {
         item = bh_fmt((char *)"%s%s", path, fileName);
       }
       else {
@@ -462,15 +645,14 @@ char *bh_file_read(const char *path)
 	len = ftell(fp);
 	fseek(fp, 0L, SEEK_SET);
 
-	char *buffer = (char*)bh_arena_alloc(build_arena, len);
+	char *buffer = (char*)bh_arena_alloc(build_arena, len + 1);
 	if (buffer == NULL) {
     bh_log(3, bh_fmt("failed to allocate memory.\n"));
     return NULL;
   }
 
-	fread(buffer, sizeof(char), len - 1, fp);
-	buffer[len - 1] = '\0';
-
+	fread(buffer, 1, len, fp);
+	buffer[len] = 0;
 	fclose(fp);
 
 	return buffer;
@@ -545,13 +727,26 @@ char *bh_string_chop(const char *s, size_t from, size_t to)
 	return sub;
 }
 
-char *bh_string_replace_char(char *s, const unsigned char from, const unsigned char to)
+char *bh_string_replace_char(char *s, char from, char to)
 {
-	for (size_t i = 0; i < strlen(s); ++i)
-		if (s[i] == from)
-			s[i] = to;
+  if (!s) return NULL;
 
-	return s;
+  size_t s_size = strlen(s);
+
+  size_t index = 0;
+  char *copy = malloc(s_size + 1);
+  memset(copy, 0, s_size + 1);
+
+  for (size_t i = 0; i < s_size; ++i) {
+    if (s[i] == from) {
+      if (to) copy[index++] = to;
+    }
+    else copy[index++] = s[i];
+  }
+
+  copy[index] = 0;
+
+  return copy;
 }
 
 bool bh_string_to_array(bh_strings_t *strings, const char *string, const unsigned char seperator)
@@ -562,7 +757,11 @@ bool bh_string_to_array(bh_strings_t *strings, const char *string, const unsigne
   for (size_t i = 0; i < strlen(string); ++i) {
     if (string[i] == seperator) {
       char *sub = bh_string_chop(string, index, i);
-      bh_darray_push(strings, sub);
+      if (sub) {
+        sub[i - index] = 0;
+        bh_darray_push(strings, sub);
+      }
+
       index = i + 1;
     }
   }
@@ -589,11 +788,11 @@ bool bh_is_binary_old(const char *bin_path, bh_files_t *files)
 		return true;
 
 	for (size_t i = 0; i < bh_darray_len(files); ++i) {
-		time_t source_timestamp = bh_file_get_time(files->buffer[i]);
+		time_t source_timestamp = bh_file_get_time(files->items[i]);
 		if (source_timestamp == (time_t)(-1)) {
       bh_log(3,
         bh_fmt("Failed to get modification time for source file: %s\n",
-        files->buffer[i]
+        files->items[i]
       ));
 
 			continue;
@@ -614,6 +813,7 @@ bool bh_on_binary_old_execute(const char *bin_path, bh_files_t *files, const cha
   return false;
 }
 
+#if __UNIX__
 bool bh_push_async(bh_async_t *async, const char *command)
 {
   pid_t pid = fork();
@@ -633,7 +833,56 @@ bool bh_push_async(bh_async_t *async, const char *command)
 
   return true;
 }
+#elif __WIN32__
+bool bh_push_async(bh_async_t *async, const char *command)
+{
+    STARTUPINFO si = { sizeof(si) };
+    PROCESS_INFORMATION pi;
+    WINBOOL success;
+    char *cmdline;
 
+    // Create a modifiable command line string
+    // Note: CreateProcess may modify the command line string
+    cmdline = _strdup(command);
+    if (!cmdline) {
+        return false;
+    }
+
+    success = CreateProcess(
+        NULL,           // No application name (use command line)
+        cmdline,        // Command line (needs to be writable)
+        NULL,           // Process handle not inheritable
+        NULL,           // Thread handle not inheritable
+        FALSE,          // Set handle inheritance to FALSE
+        CREATE_NO_WINDOW, // Don't create a console window
+        NULL,           // Use parent's environment block
+        NULL,           // Use parent's starting directory 
+        &si,            // Pointer to STARTUPINFO structure
+        &pi             // Pointer to PROCESS_INFORMATION structure
+    );
+
+    free(cmdline);  // Free the duplicated command line
+
+    if (!success) {
+        bh_log(3, bh_fmt("Async failed (CreateProcess error: %lu)", GetLastError()));
+        return false;
+    }
+
+    // We don't need the thread handle
+    CloseHandle(pi.hThread);
+
+    // Push the process information to the async array
+    // Note: You'll need to change bh_command_t to store HANDLE instead of pid_t
+    bh_darray_push(async, ((bh_command_t){
+        .pid = pi.hProcess,  // Store the process handle
+        .command = _strdup(command)  // Duplicate the command string
+    }));
+
+    return true;
+}
+#endif
+
+#if __UNIX__
 bool bh_await(bh_async_t *async)
 {
   bool ret = false;
@@ -650,6 +899,106 @@ bool bh_await(bh_async_t *async)
 
   return ret;
 }
+#elif __WIN32__
+bool bh_await(bh_async_t *async)
+{
+    bool ret = false;
+    bh_foreach(async, command, {
+        if (command.command)
+            bh_log(1, bh_fmt("%s\n", command.command));
+
+        // Wait for the process to complete
+        WaitForSingleObject(command.pid, INFINITE);
+        
+        // Get the exit code
+        DWORD exitCode;
+        GetExitCodeProcess(command.pid, &exitCode);
+        
+        // Clean up the process handle
+        CloseHandle(command.pid);
+        
+        // Check if the process failed
+        if (exitCode != EXIT_SUCCESS) {
+            ret = true;
+        }
+        
+        // Free the command string if it was allocated
+        if (command.command) {
+            free(command.command);
+        }
+    });
+    
+    // Clear the async array after waiting
+    bh_darray_reset(async);
+    
+    return ret;
+}
+#endif
+
+bool bh_c_source_get_include_paths(
+  bh_files_t *include_paths,
+  const char *source,
+  const char *args,
+  const char *out_filename)
+{
+  if (!include_paths || !source || !args || !out_filename) return false;
+
+  bh_mkdir(".build_cache");
+
+  char *out = bh_fmt(".build_cache/_csource_includes_%s_.d", out_filename);
+
+  time_t source_time = bh_file_get_time(source);
+  time_t out_time = bh_file_get_time(out);
+
+  if (bh_path_exist(out) == is_none || (out_time < source_time)) {
+    assert(
+      bh_execute(
+        bh_fmt(
+          "gcc -MM -MF %s %s %s",
+          out, source, args
+        )
+      )
+    );
+  }
+
+  char *file = bh_file_read(
+    bh_fmt("%s", out));
+
+  bh_strings_t items = { 0 };
+
+  bool has_started = false;
+  size_t start = 0;
+  size_t size = strlen(file);
+
+  for (size_t i = 0; i < size; ++i) {
+    char ch = file[i];
+    if (ch == ' ') {
+      if (!has_started) {
+        start = i;
+        has_started = true;
+      } else {
+        char *item = bh_string_chop(file, start, i);
+        if (item) bh_darray_push(&items, item);
+        start = i;
+      }
+    }
+  }
+
+  char *item = bh_string_chop(file, start, size);
+  if (item) bh_darray_push(&items, item);
+
+  char *temp = bh_files_to_string(&items, 0);
+  temp = bh_string_replace_char(temp, '\r', 0);
+  temp = bh_string_replace_char(temp, '\n', 0);
+  temp = bh_string_replace_char(temp, '\\', 0);
+
+  bh_strings_t full_list = { 0 };
+  bh_string_to_array(&full_list, temp, ' ');
+
+  bh_darray_drop(&full_list, include_paths, 1);
+
+  return true;
+}
 
 void bh_init(int argc, char *argv[])
 {
@@ -658,14 +1007,35 @@ void bh_init(int argc, char *argv[])
   build_arena = &arena;
 
   char *bin = argv[0];
+
+#if __UNIX__
   char *src = bh_string_join(bin, ".c");
+#elif __WIN32__
+  char *src = bh_string_join(bh_string_chop(bin, 0, strlen(bin) - 4), ".c");
+#endif
 
   bh_files_t files = { 0 };
   bh_darray_push(&files, src);
+  bh_c_source_get_include_paths(&files, src, "", "build_include");
 
-  const char *command = bh_fmt("cc -o %s %s -march=native -O3", bin, src);
+  const char *command = bh_fmt("gcc -o %s %s -march=native -O3", bin, src);
+
   if (bh_is_binary_old(bin, &files)) {
+
+#if __WIN32__
+    if (!MoveFileEx(bin, bh_fmt("%s.old", bin), MOVEFILE_REPLACE_EXISTING)) {
+      bh_log(3, bh_fmt("Could not rename `%s` to `%s.old`.\n", bin, bin));
+    }
+
+    if (!bh_execute(command)) {
+      if (!MoveFileEx(bh_fmt("%s.old", bin), bin, MOVEFILE_REPLACE_EXISTING)) {
+        bh_log(3, bh_fmt("Could not rename `%s` to `%s.old`.\n", bin, bin));
+      }
+    }
+#else
     bh_execute(command);
+#endif
+
     bh_darray_free(&files);
     bh_arena_free(&arena);
     build_arena = NULL;
